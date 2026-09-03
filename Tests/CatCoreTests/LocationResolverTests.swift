@@ -233,6 +233,29 @@ final class LocationResolverTests: XCTestCase {
         XCTAssertEqual(result.slotEligible.map(\.eventIdentifier), ["b", "c", "d"])
     }
 
+    /// 第2段階では登録順で解決する必要があるので、渡した順のまま処理できること。
+    func testAsGivenOrderIsPreserved() async {
+        let service = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let events = [
+            Fixture.event("late-start", start: start(13), locationText: "C"),
+            Fixture.event("early-start", start: start(9), locationText: "A")
+        ]
+        var cache: [String: GeocodeCacheEntry] = [:]
+
+        let result = await resolver.resolveLocations(
+            candidates: events,
+            slotLimit: 1,
+            cache: &cache,
+            service: service,
+            now: now,
+            order: .asGiven
+        )
+
+        let log = await service.callLog
+        XCTAssertEqual(log, ["C"], "開始時刻順に並べ替えず、渡した順の先頭から処理する")
+        XCTAssertEqual(result.slotEligible.map(\.eventIdentifier), ["late-start"])
+    }
+
     func testServiceIsNotCalledOnceThreeSlotsAreFilled() async {
         let service = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
         let events = (9...14).map { hour in

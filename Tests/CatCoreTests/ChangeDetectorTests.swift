@@ -34,12 +34,27 @@ final class ChangeDetectorTests: XCTestCase {
         let event = Fixture.event("a", start: start)
         let first = detector.detectChanges(events: [event], snapshots: [:], now: now)
 
-        // EventKey は識別子なので据え置き、開始時刻だけ動かす。
-        let moved = Fixture.event("a", start: start.addingTimeInterval(3600), key: event.key)
+        // 単発予定のキーは eventIdentifier だけなので、開始時刻を動かしてもキーは変わらない。
+        let moved = Fixture.event("a", start: start.addingTimeInterval(3600))
+        XCTAssertEqual(moved.key, event.key, "開始時刻を動かしても同一の予定として識別される")
+
         let second = detector.detectChanges(events: [moved], snapshots: first.updated, now: now)
 
         XCTAssertEqual(second.updated[event.key]?.editCount, 1)
         XCTAssertEqual(second.updated[event.key]?.startDate, start.addingTimeInterval(3600))
+        XCTAssertEqual(second.changed, [event.key])
+    }
+
+    func testEndDateChangeCountsAsOneEdit() {
+        let event = Fixture.event("a", start: start, durationMinutes: 60)
+        let first = detector.detectChanges(events: [event], snapshots: [:], now: now)
+
+        // 開始時刻はそのままで終了時刻だけ伸ばす。
+        let extended = Fixture.event("a", start: start, durationMinutes: 120)
+        let second = detector.detectChanges(events: [extended], snapshots: first.updated, now: now)
+
+        XCTAssertEqual(second.updated[event.key]?.editCount, 1)
+        XCTAssertEqual(second.updated[event.key]?.endDate, extended.endDate)
         XCTAssertEqual(second.changed, [event.key])
     }
 
@@ -51,8 +66,7 @@ final class ChangeDetectorTests: XCTestCase {
         let moved = Fixture.event(
             "a",
             start: start.addingTimeInterval(3600),
-            location: Fixture.shinjuku,
-            key: event.key
+            location: Fixture.shinjuku
         )
         let second = detector.detectChanges(events: [moved], snapshots: first.updated, now: now)
 
@@ -66,8 +80,7 @@ final class ChangeDetectorTests: XCTestCase {
         for offset in 1...3 {
             let moved = Fixture.event(
                 "a",
-                start: start.addingTimeInterval(TimeInterval(offset) * 600),
-                key: event.key
+                start: start.addingTimeInterval(TimeInterval(offset) * 600)
             )
             snapshots = detector.detectChanges(events: [moved], snapshots: snapshots, now: now).updated
         }
@@ -83,7 +96,7 @@ final class ChangeDetectorTests: XCTestCase {
         XCTAssertTrue(first.updated[event.key]?.isCompleted ?? false)
         XCTAssertEqual(first.updated[event.key]?.completedAt, afterStart)
 
-        let moved = Fixture.event("a", start: start.addingTimeInterval(7200), key: event.key)
+        let moved = Fixture.event("a", start: start.addingTimeInterval(7200))
         let second = detector.detectChanges(
             events: [moved],
             snapshots: first.updated,
@@ -122,7 +135,7 @@ final class ChangeDetectorTests: XCTestCase {
         let first = detector.detectChanges(events: [event], snapshots: [:], now: now)
         XCTAssertNil(first.updated[event.key]?.latitude)
 
-        let located = Fixture.event("a", start: start, location: Fixture.tokyo, key: event.key)
+        let located = Fixture.event("a", start: start, location: Fixture.tokyo)
         let second = detector.detectChanges(events: [located], snapshots: first.updated, now: now)
 
         XCTAssertEqual(second.updated[event.key]?.editCount, 1)
@@ -133,19 +146,22 @@ final class ChangeDetectorTests: XCTestCase {
         let event = Fixture.event("a", start: start, location: Fixture.tokyo)
         let first = detector.detectChanges(events: [event], snapshots: [:], now: now)
 
-        let cleared = Fixture.event("a", start: start, location: nil, key: event.key)
+        let cleared = Fixture.event("a", start: start, location: nil)
         let second = detector.detectChanges(events: [cleared], snapshots: first.updated, now: now)
 
         XCTAssertEqual(second.updated[event.key]?.editCount, 1)
         XCTAssertNil(second.updated[event.key]?.latitude)
     }
 
-    /// 繰り返し予定。eventIdentifier が同じでも開始時刻が違えば別のスナップショットになる。
+    /// 繰り返し予定。eventIdentifier が同じでも occurrenceDate が違えば別のスナップショットになる。
     func testRecurringOccurrencesTrackEditsIndependently() {
-        let firstStart = Fixture.date(2026, 9, 1, 10, 0)
-        let secondStart = Fixture.date(2026, 9, 8, 10, 0)
-        let occurrence1 = Fixture.event("recurring", start: firstStart)
-        let occurrence2 = Fixture.event("recurring", start: secondStart)
+        let firstOccurrence = Fixture.date(2026, 9, 1, 10, 0)
+        let secondOccurrence = Fixture.date(2026, 9, 8, 10, 0)
+        let occurrence1 = Fixture.recurringEvent("recurring", occurrence: firstOccurrence)
+        let occurrence2 = Fixture.recurringEvent("recurring", occurrence: secondOccurrence)
+
+        XCTAssertNotEqual(occurrence1.key, occurrence2.key)
+        XCTAssertEqual(occurrence1.key.eventIdentifier, occurrence2.key.eventIdentifier)
 
         var snapshots = detector.detectChanges(
             events: [occurrence1, occurrence2],
@@ -153,10 +169,15 @@ final class ChangeDetectorTests: XCTestCase {
             now: now
         ).updated
         XCTAssertEqual(snapshots.count, 2)
-        XCTAssertNotEqual(occurrence1.key, occurrence2.key)
 
-        // 1回目だけ時刻を動かす。
-        let movedFirst = Fixture.event("recurring", start: firstStart.addingTimeInterval(1800), key: occurrence1.key)
+        // 1回目だけ時刻を動かす。occurrenceDate は動かさないのでキーは同じまま。
+        let movedFirst = Fixture.recurringEvent(
+            "recurring",
+            occurrence: firstOccurrence,
+            start: firstOccurrence.addingTimeInterval(1800)
+        )
+        XCTAssertEqual(movedFirst.key, occurrence1.key)
+
         snapshots = detector.detectChanges(
             events: [movedFirst, occurrence2],
             snapshots: snapshots,
@@ -165,5 +186,27 @@ final class ChangeDetectorTests: XCTestCase {
 
         XCTAssertEqual(snapshots[occurrence1.key]?.editCount, 1)
         XCTAssertEqual(snapshots[occurrence2.key]?.editCount, 0, "もう片方の回には影響しない")
+    }
+
+    /// 単発予定のキーには時刻が入らない。
+    func testSingleEventKeyIgnoresStartDate() {
+        let morning = Fixture.event("a", start: Fixture.date(2026, 9, 1, 9, 0))
+        let evening = Fixture.event("a", start: Fixture.date(2026, 9, 1, 19, 0))
+
+        XCTAssertEqual(morning.key, evening.key)
+        XCTAssertNil(morning.key.occurrenceDate)
+    }
+
+    /// 支援を送信済みかどうかは変更検知では触らない。枠の解放の判定用に持ち回るだけ。
+    func testSupportSentAtIsPreservedAcrossUpdates() {
+        let event = Fixture.event("a", start: start)
+        var snapshot = EventSnapshot(event: event)
+        snapshot.supportSentAt = Fixture.date(2026, 9, 1, 7, 0)
+
+        let moved = Fixture.event("a", start: start.addingTimeInterval(3600))
+        let result = detector.detectChanges(events: [moved], snapshots: [event.key: snapshot], now: now)
+
+        XCTAssertEqual(result.updated[event.key]?.editCount, 1)
+        XCTAssertEqual(result.updated[event.key]?.supportSentAt, Fixture.date(2026, 9, 1, 7, 0))
     }
 }

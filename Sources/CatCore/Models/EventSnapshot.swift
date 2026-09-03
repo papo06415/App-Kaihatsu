@@ -13,6 +13,12 @@ public struct EventSnapshot: Codable, Equatable {
     public var editCount: Int
     public var isCompleted: Bool
     public var completedAt: Date?
+    /// この予定について支援（出発通知）を送信した日時。未送信なら nil。
+    ///
+    /// 枠の解放の判定に使う。送信前に予定が消えたなら枠は返すが、送信後に消えても返さない
+    /// （送信済みの支援は取り消せないので、1日の上限を消費したものとして扱う）。
+    /// 実際に値を入れるのは後続フェーズの通知処理。
+    public var supportSentAt: Date?
 
     public init(
         key: EventKey,
@@ -22,7 +28,8 @@ public struct EventSnapshot: Codable, Equatable {
         longitude: Double? = nil,
         editCount: Int = 0,
         isCompleted: Bool = false,
-        completedAt: Date? = nil
+        completedAt: Date? = nil,
+        supportSentAt: Date? = nil
     ) {
         self.key = key
         self.startDate = startDate
@@ -32,6 +39,7 @@ public struct EventSnapshot: Codable, Equatable {
         self.editCount = editCount
         self.isCompleted = isCompleted
         self.completedAt = completedAt
+        self.supportSentAt = supportSentAt
     }
 
     /// 予定から新しいスナップショットを作る（editCount は 0）。
@@ -44,7 +52,8 @@ public struct EventSnapshot: Codable, Equatable {
             longitude: event.location?.longitude,
             editCount: 0,
             isCompleted: false,
-            completedAt: nil
+            completedAt: nil,
+            supportSentAt: nil
         )
     }
 

@@ -8,7 +8,7 @@ final class RetentionPolicyTests: XCTestCase {
     private func completedSnapshot(_ identifier: String, completedAt: Date?) -> EventSnapshot {
         let start = completedAt ?? now
         return EventSnapshot(
-            key: Fixture.key(identifier, start),
+            key: Fixture.key(identifier),
             startDate: start,
             endDate: start.addingTimeInterval(3600),
             editCount: 0,

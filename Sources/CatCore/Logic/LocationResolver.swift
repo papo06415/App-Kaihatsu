@@ -5,6 +5,16 @@ import Foundation
 /// 座標が解決できるかどうかで枠の消費有無が変わるため、先に全件解決することも
 /// 先に枠を決めることもできない（循環する）。そのため逐次処理で、枠が埋まった時点で打ち切る。
 public struct LocationResolver {
+    /// 候補を処理する順序。
+    ///
+    /// 枠が埋まった時点で打ち切るので、この順序がそのまま「どの予定が枠の候補になれるか」を決める。
+    public enum CandidateOrder {
+        /// 開始時刻の昇順。第1段階（開始時刻順に上位 N 件）で使う。
+        case startTime
+        /// 呼び出し側が渡した順のまま。第2段階（登録順で追加）で使う。
+        case asGiven
+    }
+
     /// 失敗エントリの有効期間。既定は24時間。
     public let failureCacheDuration: TimeInterval
 
@@ -18,7 +28,8 @@ public struct LocationResolver {
     ///   - cache: ジオコーディングのキャッシュ。呼び出しの中で更新される。
     ///   - service: ジオコーディング実装。
     ///   - now: 現在時刻。失敗エントリの失効判定に使う。
-    /// - Returns: 座標を反映した予定（開始時刻順）と、枠の候補になれるキー。
+    ///   - order: 候補を処理する順序。既定は開始時刻順。
+    /// - Returns: 座標を反映した予定（処理順）と、枠の候補になれるキー。
     ///
     /// service は1件ずつ順番に await する。TaskGroup などで並行実行しない
     /// （ジオコーディングにはレート制限があるため）。
@@ -27,9 +38,14 @@ public struct LocationResolver {
         slotLimit: Int,
         cache: inout [String: GeocodeCacheEntry],
         service: GeocodingService,
-        now: Date
+        now: Date,
+        order: CandidateOrder = .startTime
     ) async -> (resolved: [CalendarEvent], slotEligible: [EventKey]) {
-        let ordered = candidates.sorted(by: CalendarEvent.isOrderedBefore)
+        let ordered: [CalendarEvent]
+        switch order {
+        case .startTime: ordered = candidates.sorted(by: CalendarEvent.isOrderedBefore)
+        case .asGiven: ordered = candidates
+        }
 
         var resolved: [CalendarEvent] = []
         resolved.reserveCapacity(ordered.count)

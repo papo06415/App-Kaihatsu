@@ -12,7 +12,7 @@ final class RepositoryTests: XCTestCase {
     }
 
     func testSnapshotsRoundTrip() throws {
-        let key = Fixture.key("a", Fixture.date(2026, 9, 1, 10, 0))
+        let key = Fixture.key("a")
         let snapshot = EventSnapshot(
             key: key,
             startDate: Fixture.date(2026, 9, 1, 10, 0),
@@ -33,10 +33,10 @@ final class RepositoryTests: XCTestCase {
         let day = Fixture.date(2026, 9, 1)
         let slots = DailySlots(
             date: day,
-            confirmedKeys: [Fixture.key("a", Fixture.date(2026, 9, 1, 10, 0))],
+            confirmedKeys: [Fixture.key("a")],
             confirmedAt: Fixture.date(2026, 8, 31, 20, 0),
             slotLimit: 3,
-            releasedSlotCount: 1
+            supportSentSlotCount: 1
         )
 
         try repository.saveSlots([day: slots])
@@ -119,7 +119,7 @@ final class RepositoryTests: XCTestCase {
         XCTAssertEqual(repository.loadPreferences(), UserPreferences())
     }
 
-    func testSlotsWrittenBeforeReleasedSlotCountExistedStillDecode() {
+    func testSlotsWrittenBeforeSupportSentSlotCountExistedStillDecode() {
         store.putRaw(
             #"[{"date":"2026-09-01T00:00:00Z","confirmedKeys":[],"slotLimit":3}]"#,
             to: Repository.FileName.slots
@@ -128,7 +128,7 @@ final class RepositoryTests: XCTestCase {
         let loaded = repository.loadSlots()
 
         XCTAssertEqual(loaded.count, 1)
-        XCTAssertEqual(loaded.values.first?.releasedSlotCount, 0)
+        XCTAssertEqual(loaded.values.first?.supportSentSlotCount, 0)
     }
 
     func testWriteFailureIsReportedAsPersistenceFailed() {

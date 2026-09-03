@@ -34,8 +34,8 @@ enum Fixture {
         return date
     }
 
-    static func key(_ identifier: String, _ start: Date) -> EventKey {
-        EventKey(eventIdentifier: identifier, startDate: start)
+    static func key(_ identifier: String, occurrence: Date? = nil) -> EventKey {
+        EventKey(eventIdentifier: identifier, occurrenceDate: occurrence)
     }
 
     /// 既定では 1 時間の予定。`key` は identifier と start から作る。
@@ -48,17 +48,40 @@ enum Fixture {
         location: EventLocation? = nil,
         isAllDay: Bool = false,
         title: String? = nil,
+        creationDate: Date? = nil,
         key: EventKey? = nil
     ) -> CalendarEvent {
         CalendarEvent(
-            key: key ?? EventKey(eventIdentifier: identifier, startDate: start),
+            key: key ?? EventKey(eventIdentifier: identifier),
             title: title ?? identifier,
             startDate: start,
             endDate: end ?? start.addingTimeInterval(TimeInterval(durationMinutes) * 60),
             locationText: locationText,
             location: location,
             isAllDay: isAllDay,
-            calendarTitle: "テスト"
+            calendarTitle: "テスト",
+            creationDate: creationDate
+        )
+    }
+
+    /// 繰り返し予定の1回ぶん。occurrenceDate で回を区別する。
+    static func recurringEvent(
+        _ identifier: String,
+        occurrence: Date,
+        start: Date? = nil,
+        durationMinutes: Int = 60,
+        locationText: String? = nil,
+        location: EventLocation? = nil,
+        creationDate: Date? = nil
+    ) -> CalendarEvent {
+        event(
+            identifier,
+            start: start ?? occurrence,
+            durationMinutes: durationMinutes,
+            locationText: locationText,
+            location: location,
+            creationDate: creationDate,
+            key: EventKey(eventIdentifier: identifier, occurrenceDate: occurrence)
         )
     }
 
@@ -66,7 +89,7 @@ enum Fixture {
         let start = calendar.startOfDay(for: day)
         let end = calendar.date(byAdding: .day, value: 1, to: start)!
         return CalendarEvent(
-            key: EventKey(eventIdentifier: identifier, startDate: start),
+            key: EventKey(eventIdentifier: identifier),
             title: identifier,
             startDate: start,
             endDate: end,

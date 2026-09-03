@@ -18,7 +18,8 @@ final class SlotConfirmerTests: XCTestCase {
         current: DailySlots? = nil,
         targetDate: Date? = nil,
         now: Date? = nil,
-        isPremium: Bool = false
+        isPremium: Bool = false,
+        supportSentKeys: Set<EventKey> = []
     ) -> DailySlots {
         confirmer.confirmSlots(
             slotEligible: eligible,
@@ -26,7 +27,8 @@ final class SlotConfirmerTests: XCTestCase {
             current: current,
             targetDate: targetDate ?? today,
             now: now ?? previousEvening,
-            isPremium: isPremium
+            isPremium: isPremium,
+            supportSentKeys: supportSentKeys
         )
     }
 
@@ -131,6 +133,29 @@ final class SlotConfirmerTests: XCTestCase {
         XCTAssertEqual(identifiers(second), ["b", "c", "d"])
     }
 
+    func testSecondStageAddsInRegistrationOrder() {
+        let confirmed = [
+            Fixture.event("a", start: at(9)),
+            Fixture.event("b", start: at(11))
+        ]
+        let first = confirm(eligible: confirmed)
+
+        // 開始時刻は early のほうが早いが、登録は late のほうが先。
+        let early = Fixture.event("early", start: at(12), creationDate: Fixture.date(2026, 8, 30, 12, 0))
+        let late = Fixture.event("late", start: at(13), creationDate: Fixture.date(2026, 8, 30, 9, 0))
+        let candidates = confirmed + [early, late]
+        let byRegistration = candidates.sorted(by: CalendarEvent.isOrderedByRegistrationBefore)
+
+        let second = confirm(
+            eligible: candidates,
+            registrationOrdered: byRegistration,
+            current: first,
+            now: at(8)
+        )
+
+        XCTAssertEqual(identifiers(second), ["a", "b", "late"], "登録が先の late が空き枠を取る")
+    }
+
     // MARK: - 枠の解放
 
     func testDeletingAConfirmedEventFreesItsSlot() {
@@ -148,24 +173,52 @@ final class SlotConfirmerTests: XCTestCase {
         XCTAssertEqual(second.confirmedKeys.count, 2)
     }
 
-    func testFreedSlotIsNotHandedToAnExistingOutOfSlotEvent() {
+    /// 支援を送る前に消えた予定の枠は、次の予定に回す。
+    func testSlotIsReturnedWhenTheEventDisappearsBeforeSupportWasSent() {
         let confirmed = [
             Fixture.event("a", start: at(9)),
             Fixture.event("b", start: at(11)),
             Fixture.event("c", start: at(13))
         ]
-        let outOfSlot = Fixture.event("d", start: at(15))
-        let first = confirm(eligible: confirmed + [outOfSlot])
+        let waiting = Fixture.event("d", start: at(15))
+        let first = confirm(eligible: confirmed + [waiting])
         XCTAssertEqual(identifiers(first), ["a", "b", "c"])
 
-        // b を削除しても d は繰り上がらない。
-        let remaining = [confirmed[0], confirmed[2], outOfSlot]
+        // b が削除される。b にはまだ支援を送っていない。
+        let remaining = [confirmed[0], confirmed[2], waiting]
         let second = confirm(eligible: remaining, current: first, now: at(8))
-        XCTAssertEqual(identifiers(second), ["a", "c"])
+
+        XCTAssertEqual(identifiers(second), ["a", "c", "d"], "空いた枠が d に回る")
+        XCTAssertEqual(second.supportSentSlotCount, 0)
+    }
+
+    /// 支援を送ったあとに消えた予定の枠は返さない。送信済みの通知は取り消せないので、
+    /// 1日の上限を消費したものとして数える。
+    func testSlotIsNotReturnedWhenTheEventDisappearsAfterSupportWasSent() {
+        let confirmed = [
+            Fixture.event("a", start: at(9)),
+            Fixture.event("b", start: at(11)),
+            Fixture.event("c", start: at(13))
+        ]
+        let waiting = Fixture.event("d", start: at(15))
+        let first = confirm(eligible: confirmed + [waiting])
+
+        // b に支援を送信済みの状態で b が削除される。
+        let remaining = [confirmed[0], confirmed[2], waiting]
+        let second = confirm(
+            eligible: remaining,
+            current: first,
+            now: at(8),
+            supportSentKeys: [confirmed[1].key]
+        )
+
+        XCTAssertEqual(identifiers(second), ["a", "c"], "d は繰り上がらない")
+        XCTAssertEqual(second.supportSentSlotCount, 1)
 
         // 次の起動でも繰り上がらない。
         let third = confirm(eligible: remaining, current: second, now: at(8, 30))
         XCTAssertEqual(identifiers(third), ["a", "c"])
+        XCTAssertEqual(third.supportSentSlotCount, 1)
     }
 
     /// 完了しても枠は解放しない。これが無いと1日に何件でもサポートされてしまう。
@@ -232,6 +285,21 @@ final class SlotConfirmerTests: XCTestCase {
         let slots = confirm(eligible: events)
 
         XCTAssertEqual(identifiers(slots), ["a", "b", "c"])
+    }
+
+    /// 繰り返し予定の各回は occurrenceDate で区別され、それぞれ枠を消費する。
+    func testRecurringOccurrencesOnTheSameDayTakeSeparateSlots() {
+        let morning = Fixture.recurringEvent("standup", occurrence: at(9))
+        let afternoon = Fixture.recurringEvent("standup", occurrence: at(14))
+        let evening = Fixture.recurringEvent("standup", occurrence: at(18))
+
+        let slots = confirm(eligible: [morning, afternoon, evening])
+
+        XCTAssertEqual(slots.confirmedKeys.count, 3, "同じ eventIdentifier でも別々の枠を取る")
+        XCTAssertEqual(
+            slots.confirmedKeys.map(\.occurrenceDate),
+            [at(9), at(14), at(18)]
+        )
     }
 
     func testPremiumTakesEveryEvent() {

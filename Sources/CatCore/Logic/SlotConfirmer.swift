@@ -6,6 +6,19 @@ import Foundation
 /// - 第1段階（前日まで）: 開始時刻の早い順に上位 N 件を確定する。
 /// - 第2段階（確定後）  : 空き枠がある場合に限り、登録順で追加する。既存の枠は押し出さない。
 public struct SlotConfirmer {
+    /// 枠の解放の内訳。第2段階の計算をそのまま外へ出したもの。
+    ///
+    /// `CalendarLayer` が「あと何件ジオコーディングすべきか」を決めるのにも使うので、
+    /// 同じ計算が2か所に分かれないよう公開している。
+    public struct SlotAccounting: Equatable {
+        /// 引き続き枠を持ち続けるキー。
+        public let keptKeys: [EventKey]
+        /// 支援を送信済みのまま消えたため、返せない枠の累計。
+        public let supportSentSlotCount: Int
+        /// 第2段階で追加できる件数。
+        public let additionBudget: Int
+    }
+
     private let calendar: Calendar
     /// 無料版の1日あたりの枠数。
     public let freeSlotLimit: Int
@@ -28,20 +41,53 @@ public struct SlotConfirmer {
         Self.overlaps(event, targetDate: targetDate, calendar: calendar)
     }
 
+    /// 枠の解放を計算する。
+    ///
+    /// - Parameters:
+    ///   - current: 保存済みの枠。
+    ///   - presentKeys: いまカレンダーに存在し、対象日の枠候補になれるキー。
+    ///   - supportSentKeys: 既に支援を送信した予定のキー。
+    ///   - limit: その日の枠数。
+    public func accounting(
+        current: DailySlots,
+        presentKeys: Set<EventKey>,
+        supportSentKeys: Set<EventKey>,
+        limit: Int
+    ) -> SlotAccounting {
+        let kept = current.confirmedKeys.filter { presentKeys.contains($0) }
+        // 消えた予定のうち、支援を送信済みだったものの枠は返さない。
+        // 送信前に消えたものの枠はそのまま次の予定に回す。
+        let unreturnable = current.confirmedKeys.filter {
+            !presentKeys.contains($0) && supportSentKeys.contains($0)
+        }
+        let supportSent = current.supportSentSlotCount + unreturnable.count
+
+        let budget: Int
+        if limit == Int.max {
+            budget = Int.max
+        } else {
+            budget = max(0, limit - kept.count - supportSent)
+        }
+
+        return SlotAccounting(keptKeys: kept, supportSentSlotCount: supportSent, additionBudget: budget)
+    }
+
     /// - Parameters:
     ///   - slotEligible: 座標解決を通過した予定（LocationResolver の結果）。
-    ///   - registrationOrdered: 同じ集合を登録順に並べたもの。第2段階の追加順に使う。
+    ///   - registrationOrdered: 同じ集合を登録順（creationDate 昇順）に並べたもの。
     ///   - current: 保存済みの枠。無ければ nil。
     ///   - targetDate: 対象日。
     ///   - now: 現在時刻。
     ///   - isPremium: Premium なら枠数は無制限。
+    ///   - supportSentKeys: 既に支援を送信した予定のキー。枠を返すかどうかの判定に使う。
     public func confirmSlots(
         slotEligible: [CalendarEvent],
         registrationOrdered: [CalendarEvent],
         current: DailySlots?,
         targetDate: Date,
         now: Date,
-        isPremium: Bool
+        isPremium: Bool,
+        supportSentKeys: Set<EventKey> = []
     ) -> DailySlots {
         let dayStart = calendar.startOfDay(for: targetDate)
         let limit = isPremium ? Int.max : freeSlotLimit
@@ -59,7 +105,7 @@ public struct SlotConfirmer {
                 confirmedKeys: keys,
                 confirmedAt: current?.confirmedAt ?? now,
                 slotLimit: Int.max,
-                releasedSlotCount: 0
+                supportSentSlotCount: 0
             )
         }
 
@@ -71,6 +117,7 @@ public struct SlotConfirmer {
             current: current,
             confirmedAt: confirmedAt,
             eligibleKeys: eligibleKeys,
+            supportSentKeys: supportSentKeys,
             registrationOrdered: registrationOrdered,
             dayStart: dayStart,
             limit: limit
@@ -105,7 +152,7 @@ public struct SlotConfirmer {
             confirmedKeys: Array(keys),
             confirmedAt: now,
             slotLimit: limit,
-            releasedSlotCount: 0
+            supportSentSlotCount: 0
         )
     }
 
@@ -115,25 +162,26 @@ public struct SlotConfirmer {
         current: DailySlots,
         confirmedAt: Date,
         eligibleKeys: Set<EventKey>,
+        supportSentKeys: Set<EventKey>,
         registrationOrdered: [CalendarEvent],
         dayStart: Date,
         limit: Int
     ) -> DailySlots {
         // 枠の解放。取得結果から消えた予定（外部で削除された／別の日に移動した）を外す。
         // 完了済みの予定は取得結果に残り続けるので、ここで外れることはない。
-        var confirmed = current.confirmedKeys.filter { eligibleKeys.contains($0) }
-        let releasedNow = current.confirmedKeys.count - confirmed.count
-        let releasedTotal = current.releasedSlotCount + releasedNow
+        let accounting = accounting(
+            current: current,
+            presentKeys: eligibleKeys,
+            supportSentKeys: supportSentKeys,
+            limit: limit
+        )
 
-        // 追加に使えるのは「一度も埋まらなかった枠」だけ。解放された枠は再利用しない。
-        // （完了や削除で枠が戻ると、朝に3件・昼に3件…と1日の上限が無意味になるため）
-        let budget = max(0, limit - confirmed.count - releasedTotal)
-
-        if budget > 0 {
+        var confirmed = accounting.keptKeys
+        if accounting.additionBudget > 0 {
             var taken = Set(confirmed)
             var added = 0
             for event in registrationOrdered {
-                guard added < budget else { break }
+                guard added < accounting.additionBudget else { break }
                 guard eligibleKeys.contains(event.key), !taken.contains(event.key) else { continue }
                 confirmed.append(event.key)
                 taken.insert(event.key)
@@ -146,7 +194,7 @@ public struct SlotConfirmer {
             confirmedKeys: confirmed,
             confirmedAt: confirmedAt,
             slotLimit: limit,
-            releasedSlotCount: releasedTotal
+            supportSentSlotCount: accounting.supportSentSlotCount
         )
     }
 }

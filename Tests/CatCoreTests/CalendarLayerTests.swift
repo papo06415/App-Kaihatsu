@@ -229,8 +229,8 @@ final class CalendarLayerTests: XCTestCase {
         _ = try await layer.refreshOnLaunch(now: at(1, 8))
         XCTAssertEqual(repository.loadSnapshots()[event.key]?.editCount, 0)
 
-        // 開始時刻だけ動かす（EventKey は識別子なので据え置き）。
-        source.events = [Fixture.event("a", start: at(1, 10), locationText: "L-a", key: event.key)]
+        // 開始時刻だけ動かす。単発予定のキーは eventIdentifier だけなので同一と判定される。
+        source.events = [Fixture.event("a", start: at(1, 10), locationText: "L-a")]
         _ = try await layer.refreshOnLaunch(now: at(1, 8, 30))
 
         XCTAssertEqual(repository.loadSnapshots()[event.key]?.editCount, 1)
@@ -263,6 +263,96 @@ final class CalendarLayerTests: XCTestCase {
         XCTAssertEqual(result.todaySlots.confirmedKeys.count, events.count)
         XCTAssertEqual(result.todaySlots.slotLimit, Int.max)
         XCTAssertTrue(result.editLimitExceededKeys.isEmpty)
+    }
+
+    // MARK: - 枠の解放（支援送信の有無）
+
+    func testDeletedEventReturnsItsSlotWhenSupportWasNotSent() async throws {
+        let confirmed = [located("a", at(1, 9)), located("b", at(1, 10)), located("c", at(1, 11))]
+        let waiting = located("d", at(1, 12))
+        let source = MockCalendarSource(events: confirmed + [waiting])
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        let first = try await layer.refreshOnLaunch(now: at(1, 8))
+        XCTAssertEqual(first.todaySlots.confirmedKeys.map(\.eventIdentifier), ["a", "b", "c"])
+
+        // b を削除する。支援はまだ送っていない。
+        source.events = [confirmed[0], confirmed[2], waiting]
+        let second = try await layer.refreshOnLaunch(now: at(1, 8, 30))
+
+        XCTAssertEqual(second.todaySlots.confirmedKeys.map(\.eventIdentifier), ["a", "c", "d"])
+        XCTAssertEqual(second.todaySlots.supportSentSlotCount, 0)
+    }
+
+    func testDeletedEventKeepsItsSlotSpentWhenSupportWasAlreadySent() async throws {
+        let confirmed = [located("a", at(1, 9)), located("b", at(1, 10)), located("c", at(1, 11))]
+        let waiting = located("d", at(1, 12))
+        let source = MockCalendarSource(events: confirmed + [waiting])
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        _ = try await layer.refreshOnLaunch(now: at(1, 8))
+
+        // b に支援を送信したことを記録してから b を削除する。
+        try repository.markSupportSent(for: confirmed[1].key, at: at(1, 8, 15))
+        source.events = [confirmed[0], confirmed[2], waiting]
+        let second = try await layer.refreshOnLaunch(now: at(1, 8, 30))
+
+        XCTAssertEqual(second.todaySlots.confirmedKeys.map(\.eventIdentifier), ["a", "c"])
+        XCTAssertEqual(second.todaySlots.supportSentSlotCount, 1)
+        XCTAssertEqual(second.outOfSlotKeys.map(\.eventIdentifier), ["d"])
+
+        // 次の起動でも枠は戻らない。
+        let third = try await layer.refreshOnLaunch(now: at(1, 9, 0))
+        XCTAssertEqual(third.todaySlots.confirmedKeys.map(\.eventIdentifier), ["a", "c"])
+    }
+
+    // MARK: - 登録順と繰り返し予定
+
+    func testSecondStageUsesCreationDateOrderNotStartTimeOrder() async throws {
+        let confirmed = [located("a", at(1, 9)), located("b", at(1, 10))]
+        let source = MockCalendarSource(events: confirmed)
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        _ = try await layer.refreshOnLaunch(now: at(1, 8))
+
+        // 開始時刻は earlyStart のほうが早いが、登録は firstRegistered が先。
+        let firstRegistered = Fixture.event(
+            "first-registered",
+            start: at(1, 16),
+            locationText: "L1",
+            creationDate: Fixture.date(2026, 8, 20, 9, 0)
+        )
+        let earlyStart = Fixture.event(
+            "early-start",
+            start: at(1, 15),
+            locationText: "L2",
+            creationDate: Fixture.date(2026, 8, 25, 9, 0)
+        )
+        // fetchEvents は開始時刻順で返す（EventKit と同じ）。登録順は creationDate だけが決める。
+        source.events = confirmed + [earlyStart, firstRegistered]
+
+        let result = try await layer.refreshOnLaunch(now: at(1, 8, 30))
+
+        XCTAssertEqual(
+            result.todaySlots.confirmedKeys.map(\.eventIdentifier),
+            ["a", "b", "first-registered"]
+        )
+    }
+
+    func testRecurringOccurrencesOnTheSameDayAreTreatedAsSeparateEvents() async throws {
+        let morning = Fixture.recurringEvent("standup", occurrence: at(1, 9), locationText: "L-am")
+        let evening = Fixture.recurringEvent("standup", occurrence: at(1, 18), locationText: "L-pm")
+        let source = MockCalendarSource(events: [morning, evening])
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        let result = try await layer.refreshOnLaunch(now: at(1, 8))
+
+        XCTAssertEqual(result.todaySlots.confirmedKeys.count, 2)
+        XCTAssertEqual(repository.loadSnapshots().count, 2, "回ごとに別のスナップショットを持つ")
     }
 
     func testExpiredDataIsPrunedOnLaunch() async throws {

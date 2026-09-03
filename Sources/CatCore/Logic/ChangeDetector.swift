@@ -77,18 +77,3 @@ public struct ChangeDetector {
         return (updated, changed, deleted)
     }
 }
-
-extension EventKey {
-    /// 開始時刻の昇順、同一なら eventIdentifier の昇順。
-    static func isOrderedBefore(_ lhs: EventKey, _ rhs: EventKey) -> Bool {
-        if lhs.startDate != rhs.startDate { return lhs.startDate < rhs.startDate }
-        return lhs.eventIdentifier < rhs.eventIdentifier
-    }
-}
-
-extension CalendarEvent {
-    /// 開始時刻の昇順、同一なら eventIdentifier の昇順。
-    static func isOrderedBefore(_ lhs: CalendarEvent, _ rhs: CalendarEvent) -> Bool {
-        EventKey.isOrderedBefore(lhs.key, rhs.key)
-    }
-}

@@ -57,6 +57,16 @@ public struct Repository {
         try save(list, to: FileName.snapshots)
     }
 
+    /// 支援（出発通知）を送信したことを記録する。枠を返すかどうかの判定に効く。
+    /// 後続フェーズの通知処理から呼ぶ想定。対象のスナップショットが無ければ何もしない。
+    public func markSupportSent(for key: EventKey, at date: Date) throws {
+        var snapshots = loadSnapshots()
+        guard var snapshot = snapshots[key] else { return }
+        snapshot.supportSentAt = date
+        snapshots[key] = snapshot
+        try saveSnapshots(snapshots)
+    }
+
     // MARK: - 枠
     //
     // [Date: DailySlots] も同じ理由で配列として保存する（Date は JSON のキーになれない）。

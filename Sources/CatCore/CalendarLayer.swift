@@ -130,6 +130,8 @@ public struct CalendarLayer {
         let fetched = try source.fetchEvents(from: rangeStart, to: rangeEnd)
 
         let slotLimit = preferences.isPremium ? Int.max : freeSlotLimit
+        // 枠を返すかどうかの判定に使う。支援を送る前に消えた予定の枠は次の予定に回す。
+        let supportSentKeys = Set(snapshots.filter { $0.value.supportSentAt != nil }.keys)
 
         // 5. 今日と翌日それぞれについて座標を解決し、枠を確定する。
         var resolvedByKey: [EventKey: CalendarEvent] = [:]
@@ -169,6 +171,7 @@ public struct CalendarLayer {
                 candidates: candidates,
                 existing: existing,
                 slotLimit: slotLimit,
+                supportSentKeys: supportSentKeys,
                 cache: &geocodeCache,
                 now: now
             )
@@ -191,10 +194,8 @@ public struct CalendarLayer {
 
             let eligibleEvents = candidates.filter { eligibleSet.contains($0.key) }
                 .map { resolvedByKey[$0.key] ?? $0 }
-            let registrationOrdered = fetched.compactMap { event -> CalendarEvent? in
-                guard eligibleSet.contains(event.key) else { return nil }
-                return resolvedByKey[event.key] ?? event
-            }
+            // 第2段階の追加順。カレンダーに登録された順に並べる。
+            let registrationOrdered = eligibleEvents.sorted(by: CalendarEvent.isOrderedByRegistrationBefore)
 
             let confirmed = slotConfirmer.confirmSlots(
                 slotEligible: eligibleEvents,
@@ -202,7 +203,8 @@ public struct CalendarLayer {
                 current: existing,
                 targetDate: day,
                 now: now,
-                isPremium: preferences.isPremium
+                isPremium: preferences.isPremium,
+                supportSentKeys: supportSentKeys
             )
             slots[day] = confirmed
 
@@ -273,6 +275,7 @@ public struct CalendarLayer {
         candidates: [CalendarEvent],
         existing: DailySlots?,
         slotLimit: Int,
+        supportSentKeys: Set<EventKey>,
         cache: inout [String: GeocodeCacheEntry],
         now: Date
     ) async -> ResolveOutcome {
@@ -293,7 +296,11 @@ public struct CalendarLayer {
 
         let confirmedSet = Set(existing.confirmedKeys)
         let held = candidates.filter { confirmedSet.contains($0.key) }
-        let rest = candidates.filter { !confirmedSet.contains($0.key) }
+        // 空き枠を争う候補は登録順で解決する。解決の順序がそのまま枠の候補を決めるので、
+        // ここを開始時刻順にすると第2段階の「登録順で追加」が効かなくなる。
+        let rest = candidates
+            .filter { !confirmedSet.contains($0.key) }
+            .sorted(by: CalendarEvent.isOrderedByRegistrationBefore)
 
         let first = await locationResolver.resolveLocations(
             candidates: held,
@@ -308,13 +315,14 @@ public struct CalendarLayer {
             attempted: Self.attemptedKeys(in: first.resolved, eligible: first.slotEligible, slotLimit: held.count)
         )
 
-        // SlotConfirmer の budget と同じ計算。解放済みの枠は再利用しない。
-        let budget: Int
-        if slotLimit == Int.max {
-            budget = Int.max
-        } else {
-            budget = max(0, slotLimit - existing.confirmedKeys.count - existing.releasedSlotCount)
-        }
+        // 追加できる件数は SlotConfirmer と同じ計算で求める。ここがずれると、
+        // 枠が空いているのに座標を解決しない（またはその逆）ことになる。
+        let budget = slotConfirmer.accounting(
+            current: existing,
+            presentKeys: Set(candidates.map(\.key)),
+            supportSentKeys: supportSentKeys,
+            limit: slotLimit
+        ).additionBudget
         guard budget > 0, !rest.isEmpty else {
             outcome.resolved.append(contentsOf: rest)
             return outcome
@@ -325,7 +333,8 @@ public struct CalendarLayer {
             slotLimit: budget,
             cache: &cache,
             service: geocoder,
-            now: now
+            now: now,
+            order: .asGiven
         )
         outcome.resolved.append(contentsOf: second.resolved)
         outcome.eligible.append(contentsOf: second.slotEligible)

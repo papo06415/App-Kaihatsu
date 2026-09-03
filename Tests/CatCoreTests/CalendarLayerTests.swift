@@ -308,6 +308,71 @@ final class CalendarLayerTests: XCTestCase {
         XCTAssertEqual(third.todaySlots.confirmedKeys.map(\.eventIdentifier), ["a", "c"])
     }
 
+    // MARK: - 場所なし予定に後から場所が追加された場合
+    //
+    // 「新たな枠を消費しない」は「1日の上限3件を超えない」という意味。
+    // 一度枠を逃した予定が以後も枠を取れない、という制約は設けない。
+
+    func testEventGainingALocationTakesAFreeSlot() async throws {
+        let confirmed = located("a", at(1, 9))
+        let noLocation = Fixture.event("later", start: at(1, 12), locationText: nil)
+        let source = MockCalendarSource(events: [confirmed, noLocation])
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        let first = try await layer.refreshOnLaunch(now: at(1, 8))
+        XCTAssertEqual(first.todaySlots.confirmedKeys.map(\.eventIdentifier), ["a"])
+        XCTAssertEqual(first.noLocationKeys.map(\.eventIdentifier), ["later"])
+
+        // ユーザーが場所欄を埋めた。空き枠が2つあるので入る。
+        source.events = [confirmed, located("later", at(1, 12))]
+        let second = try await layer.refreshOnLaunch(now: at(1, 8, 30))
+
+        XCTAssertEqual(second.todaySlots.confirmedKeys.map(\.eventIdentifier), ["a", "later"])
+        XCTAssertLessThanOrEqual(second.todaySlots.confirmedKeys.count, 3)
+    }
+
+    func testEventGainingALocationIsRejectedWhenSlotsAreFull() async throws {
+        let confirmed = (9...11).map { located("f\($0)", at(1, $0)) }
+        let noLocation = Fixture.event("later", start: at(1, 12), locationText: nil)
+        let source = MockCalendarSource(events: confirmed + [noLocation])
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        let first = try await layer.refreshOnLaunch(now: at(1, 8))
+        XCTAssertEqual(first.todaySlots.confirmedKeys.map(\.eventIdentifier), ["f9", "f10", "f11"])
+
+        // 場所を埋めても枠は空いていないので入らない。
+        source.events = confirmed + [located("later", at(1, 12))]
+        let second = try await layer.refreshOnLaunch(now: at(1, 8, 30))
+
+        XCTAssertEqual(second.todaySlots.confirmedKeys.map(\.eventIdentifier), ["f9", "f10", "f11"])
+        XCTAssertEqual(second.outOfSlotKeys.map(\.eventIdentifier), ["later"])
+        XCTAssertLessThanOrEqual(second.todaySlots.confirmedKeys.count, 3)
+    }
+
+    /// 場所を後から埋める予定が何件あっても、1日の枠は3件を超えない。
+    func testLateAddedLocationsNeverPushTheDayAboveThreeSlots() async throws {
+        let confirmed = located("a", at(1, 9))
+        let pending = (10...14).map { Fixture.event("p\($0)", start: at(1, $0), locationText: nil) }
+        let source = MockCalendarSource(events: [confirmed] + pending)
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        _ = try await layer.refreshOnLaunch(now: at(1, 8))
+
+        // 5件すべてに場所が入った。
+        source.events = [confirmed] + (10...14).map { located("p\($0)", at(1, $0)) }
+
+        var result = try await layer.refreshOnLaunch(now: at(1, 8, 30))
+        XCTAssertEqual(result.todaySlots.confirmedKeys.count, 3)
+
+        // 何度起動しても増えない。
+        result = try await layer.refreshOnLaunch(now: at(1, 8, 45))
+        XCTAssertEqual(result.todaySlots.confirmedKeys.count, 3)
+        XCTAssertEqual(result.todaySlots.confirmedKeys.map(\.eventIdentifier), ["a", "p10", "p11"])
+    }
+
     // MARK: - 登録順と繰り返し予定
 
     func testSecondStageUsesCreationDateOrderNotStartTimeOrder() async throws {

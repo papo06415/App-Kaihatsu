@@ -56,7 +56,7 @@ swift test
 このリポジトリは Swift 6.0.3（Ubuntu 24.04, x86_64）で検証済み。
 
 ```
-Executed 99 tests, with 0 failures
+Executed 102 tests, with 0 failures
 ```
 
 `CatPlatform` は Linux 上では `#if canImport(EventKit)` が偽になるため中身が空になる。
@@ -75,7 +75,7 @@ Executed 99 tests, with 0 failures
 | `ConflictDetectorTests` | 8 | 同時刻/部分重複/境界接触/終日 |
 | `RepositoryTests` | 11 | 往復、壊れた JSON、書き込み失敗 |
 | `RetentionPolicyTests` | 6 | 14日 / 3日 / 24時間 |
-| `CalendarLayerTests` | 20 | 統合（権限・枠・登録順・日跨ぎ・再起動・期限切れ削除） |
+| `CalendarLayerTests` | 23 | 統合（権限・枠・登録順・日跨ぎ・再起動・期限切れ削除） |
 
 ## Mac 上で追加が必要なこと
 
@@ -129,10 +129,13 @@ CatPlatform は Linux 上で一度もコンパイルされていない。Mac に
 
 ---
 
-## 仕様の決定内容
+## 仕様
 
-実装中に上がった仕様の矛盾は3点とも決着済み。決定内容と理由は
-[docs/spec-decisions.md](docs/spec-decisions.md) に記録している。
+- [docs/spec.md](docs/spec.md) — カレンダー層の確定仕様と、後続フェーズ
+  （移動時間・通知）の確定数値。後続フェーズは記載のみでコードには反映していない。
+- [docs/spec-decisions.md](docs/spec-decisions.md) — 実装中に上がった論点の決定内容と理由。
+
+実装中に上がった仕様の矛盾・曖昧点は決着済み。主なものは次の6点。
 
 1. **`EventKey` から開始時刻を外した。** 単発予定は `eventIdentifier` のみ、
    繰り返し予定は `eventIdentifier` + `occurrenceDate`。開始時刻を動かしても
@@ -143,6 +146,11 @@ CatPlatform は Linux 上で一度もコンパイルされていない。Mac に
 3. **枠の解放は「支援を送信したか」で決める。** 送信前に消えた予定の枠は返し、
    送信後に消えた予定の枠は返さない。`EventSnapshot.supportSentAt` と
    `DailySlots.supportSentSlotCount` がこの判定を持つ。
+4. **場所を後から追加された予定**は、第2段階の通常の追加として扱う。空き枠があれば
+   入り、無ければ入らない。1日の上限3件は常に超えない。
+5. **完了判定は開始時刻だけで決める**（`now >= startDate`）。通知の送信有無は条件にしない。
+6. **完了後の編集・削除のブロックはカレンダー層の責務ではない。** 凍結とスナップショットの
+   保持までを担い、UI 側のブロックは後続フェーズで扱う。
 
 なお、**この変更以前に保存されたデータとは互換性が無い**（`EventKey` の形が変わったため）。
 未リリースなので移行処理は入れていない。

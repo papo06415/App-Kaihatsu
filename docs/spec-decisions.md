@@ -324,9 +324,81 @@ let carriedOver = result.tomorrowEvents.filter {
 
 ---
 
+## 決定11: 移動時間の取得はプロトコルで抽象化する
+
+### 決定
+
+```swift
+public protocol TravelTimeService {
+    func travelTime(from: EventLocation, to: EventLocation, mode: TravelMode) async -> TravelTimeResult
+}
+```
+
+`CatCore.DeparturePlanner` はこのプロトコルしか知らない。MKDirections を呼ぶ
+`MapKitTravelTimeService` は `CatPlatform` に置き、`#if canImport(MapKit)` で囲む。
+
+### 理由
+
+カレンダー層の `CalendarSource` / `GeocodingService` / `FileStore` と同じ分離。
+MKDirections はネットワークを叩くうえ Apple 専用なので、これを直接呼ぶコードに
+出発時刻の計算が混ざると Linux で検証できなくなる。
+
+移動時間は「与えられた値」として受け取り、距離の判定・交通手段の選択・出発時刻の算出・
+出発地点の連鎖はすべて純粋な計算にしてある。
+
+### 直線距離の求め方
+
+大円距離（Haversine、IUGG 平均地球半径 6,371,008.8m）。CoreLocation の
+`CLLocation.distance(from:)` は WGS84 の測地線距離なので、同じ2点でも数メートル違う。
+1.5km の境界付近では判定が分かれうる。Linux でテストできることを優先した。
+
+距離の算出（`straightLineDistanceMeters`）と距離の分類（`mode(forDistanceMeters:)`）は
+分けてある。緯度経度から「ちょうど 1500.0m」の地点は浮動小数点の丸めで作れないため、
+境界の扱いは距離を直接与えて検証している。
+
+### 移動時間の取得は逐次
+
+1件ずつ順番に await する。ジオコーディングと同じくレート制限があるため。
+出発地点の連鎖は前の予定の「場所」にしか依存しないので並行実行も可能だが、そうしていない。
+
+---
+
 ## 未確定の論点
 
-以下は実装で暫定的に決めた既定値。運用データが出てから判断する。
+以下は実装で暫定的に決めた既定値、または仕様に記載が無く実装を保留した項目。
+
+### 移動時間を取得できなかった場合の扱い
+
+`DeparturePlan.Outcome.travelTimeUnavailable` に落とすだけで、出発時刻は算出しない。
+再試行するのか、通知を出すのか、枠を解放するのかは仕様に記載が無い。
+
+失敗しても予定の「場所」自体はあるので、次のサポート対象の起点にはその場所を使う
+（仕様 2-3 の「前のサポート対象に場所がない場合」には当たらないため）。ここは実装済み。
+
+### 自宅の座標が未設定の場合
+
+`UserPreferences.homeLatitude` / `homeLongitude` はどちらも省略可能。未設定だと
+その日の最初のサポート対象の起点が決まらない。`Outcome.originUnavailable` に落として
+算出しないが、オンボーディングで必須にするのか別の起点を使うのかは仕様に記載が無い。
+
+なお2件目以降は前のサポート対象の場所を起点にできるので、自宅未設定でも算出できる。
+
+### 交通機関の所要時間を引く基準時刻
+
+`MKDirections.Request` の `departureDate` / `arrivalDate` を指定していない。
+交通機関は時刻によって所要時間が変わる（終電後など）が、どちらを基準にすべきかが
+仕様に無いため未指定のまま。MapKit は現在時刻を基準にする。
+
+翌日の早朝に始まる予定を今日のうちに計算するので、実際の乗車時刻とはずれる。
+
+### 日跨ぎ予定を翌日の連鎖の起点にするか
+
+日跨ぎ予定は開始日にのみ出発時刻を計算する（仕様どおり）。ただし翌日側で、その予定を
+「前のサポート対象」として次の予定の起点に使うかは仕様に記載が無い。
+
+現在は **起点として使う** ようにしている。その予定はその日のサポート対象として枠を
+消費しており、ユーザーは実際にその場所に居るため。`Outcome.notComputedOnThisDay` で
+区別できるようにしてあるので、変える場合もそこを見れば済む。
 
 ### ジオコーディングのキャッシュキーの正規化
 

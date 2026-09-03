@@ -9,7 +9,7 @@
 | フェーズ | 内容 | 状態 |
 | --- | --- | --- |
 | カレンダー層 | 予定の取得、座標解決、枠の確定、変更検知、重複検知、永続化 | **実装済み** |
-| 移動時間 | MapKit による経路探索、移動手段の判定、出発時刻の計算 | 未実装 |
+| 移動時間 | 移動手段の判定、出発時刻の計算、出発地点の連鎖 | **実装済み** |
 | 通知 | 出発通知・開始通知のスケジュールと送信 | 未実装 |
 | 天気 | WeatherKit | 未実装 |
 | UI | 画面全般 | 未実装 |
@@ -126,9 +126,10 @@ let carriedOver = result.tomorrowEvents.filter {
 
 ---
 
-## 2. 移動時間（後続フェーズ・未実装）
+## 2. 移動時間（実装済み）
 
-以下は確定した仕様。**このリポジトリのコードには一切反映していない。**
+`DeparturePlanner` が計算する。移動時間そのものは `TravelTimeService` 越しに受け取るだけで、
+`CatCore` は MapKit を知らない。実装は `CatPlatform.MapKitTravelTimeService`。
 
 ### 2-1. 移動手段の判定
 
@@ -138,6 +139,10 @@ let carriedOver = result.tomorrowEvents.filter {
 | 直線距離 1.5km 超 | ユーザーが選択した交通手段（電車 / 車） |
 
 ユーザーの選択は `UserPreferences.primaryTransport`（`.transit` / `.automobile`）に持つ。
+
+直線距離は大円距離（Haversine）で求める。CoreLocation の `CLLocation.distance(from:)` は
+WGS84 の測地線距離なので、同じ2点でもわずかに違う値になる（1.5km 付近で数メートル程度）。
+判定を Linux 上でテストできるようにするため、CatCore 側で計算している。
 
 ### 2-2. 出発時刻
 
@@ -156,6 +161,25 @@ let carriedOver = result.tomorrowEvents.filter {
 | 前のサポート対象に場所がない | 自宅 |
 
 自宅の座標は `UserPreferences.homeLatitude` / `homeLongitude` に持つ。
+
+「その日の最初」は開始時刻の昇順で判定する。連鎖は日ごとに独立していて、翌日も自宅から始まる。
+
+座標が解決できなかった予定（`noLocationKeys` に含まれるもの）は出発時刻を算出せず、
+連鎖では「場所がない」として扱う。日跨ぎ予定は枠を消費するが、出発時刻の計算は開始日にのみ行う。
+
+### 2-4. 未確定（実装していない）
+
+以下は仕様に記載が無いため、実装していない。`DeparturePlan.Outcome` に区別できる形で
+残してあるだけで、この先どう扱うかは未定。
+
+| 状況 | `Outcome` | 未定な点 |
+| --- | --- | --- |
+| 移動時間を取得できなかった | `.travelTimeUnavailable` | 再試行するか、通知を出すか、枠を解放するか |
+| 自宅が未設定で起点が決まらない | `.originUnavailable` | オンボーディングで必須にするか、別の起点を使うか |
+
+また、`MKDirections.Request` の `departureDate` / `arrivalDate` を指定していない。
+交通機関の所要時間はどの時刻を基準に引くかで変わるが、仕様に記載が無いため未指定のまま
+（MapKit は現在時刻を基準にする）。
 
 ---
 

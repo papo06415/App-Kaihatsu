@@ -28,12 +28,14 @@ public struct NotificationScheduler {
         _ result: DeparturePlanResult,
         isPremium: Bool,
         previousDepartureTimes: [EventKey: Date],
+        completedKeys: Set<EventKey> = [],
         now: Date
     ) -> NotificationPlan {
         plan(
             plans: result.today + result.tomorrow,
             isPremium: isPremium,
             previousDepartureTimes: previousDepartureTimes,
+            completedKeys: completedKeys,
             now: now
         )
     }
@@ -42,24 +44,42 @@ public struct NotificationScheduler {
     ///   - plans: 計算層の出力。
     ///   - isPremium: Premium なら開始前の3回を加える。
     ///   - previousDepartureTimes: 前回算出した出発時刻。変更の判定に使う。
+    ///   - completedKeys: 完了した予定。未発火の通知を取り消し、新しい通知も出さない。
     ///   - now: 算出時刻。即時通知・緊急通知の発火時刻になる。
     public func plan(
         plans: [DeparturePlan],
         isPremium: Bool,
         previousDepartureTimes: [EventKey: Date],
+        completedKeys: Set<EventKey> = [],
         now: Date
     ) -> NotificationPlan {
         var notifications: [ScheduledNotification] = []
         var departureTimes: [EventKey: Date] = [:]
+        var cancelled: [String] = []
 
         for plan in plans {
+            // 完了した予定に残っている通知は「既に始まった予定の準備を促す通知」になるので
+            // 取り消す。新しい通知も出さない。
+            if completedKeys.contains(plan.key) {
+                cancelled.append(contentsOf: ScheduledNotification.allIdentifiers(for: plan.key))
+                continue
+            }
+
             switch plan.outcome {
             case .notComputedOnThisDay:
                 // 日跨ぎ予定の2日目。通知の対象外。
                 continue
 
-            case .destinationLocationUnavailable, .originUnavailable:
-                // どちらも通知の仕様が無い（README の「確認が必要な項目」を参照）。
+            case .destinationLocationUnavailable:
+                // 仕様 4-2。枠を持っているのに何も起きないと不具合と区別が付かないため、
+                // 場所が分からなかったことを伝える。
+                notifications.append(
+                    ScheduledNotification(key: plan.key, kind: .locationUnavailable, fireDate: now)
+                )
+
+            case .originUnavailable:
+                // 自宅が未設定のときだけ起きる。オンボーディングで必須にしている（決定13）ので
+                // 通常フローでは発生しない。通知の規定も無いので何も出さない。
                 continue
 
             case .travelTimeUnavailable:
@@ -96,13 +116,20 @@ public struct NotificationScheduler {
             return lhs.kind.rawValue < rhs.kind.rawValue
         }
 
-        return NotificationPlan(notifications: notifications, departureTimes: departureTimes)
+        return NotificationPlan(
+            notifications: notifications,
+            departureTimes: departureTimes,
+            cancelledIdentifiers: cancelled
+        )
     }
 
     // MARK: - 登録
 
     /// 算出した通知を登録する。登録順は発火時刻の昇順。
     public func register(_ plan: NotificationPlan, using scheduler: NotificationScheduling) async {
+        if !plan.cancelledIdentifiers.isEmpty {
+            await scheduler.removeAll(withIdentifiers: plan.cancelledIdentifiers)
+        }
         for notification in plan.notifications {
             await scheduler.add(notification)
         }
@@ -131,9 +158,17 @@ public struct NotificationScheduler {
         }
 
         // 既に過ぎたタイミングは登録しない。
-        return candidates
-            .filter { $0.1 > now }
-            .map { ScheduledNotification(key: plan.key, kind: $0.0, fireDate: $0.1) }
+        // 同じ時刻に重なったら1件にまとめ、出発時刻を優先する（行動に直結するため）。
+        // 移動20分＋バッファ10分で開始30分前ちょうど、といった重なり方をする。
+        var byFireDate: [Date: NotificationKind] = [:]
+        for (kind, fireDate) in candidates where fireDate > now {
+            if byFireDate[fireDate] == nil || kind == .departure {
+                byFireDate[fireDate] = kind
+            }
+        }
+
+        return byFireDate
+            .map { ScheduledNotification(key: plan.key, kind: $0.value, fireDate: $0.key) }
     }
 
     // MARK: - 出発時刻が変わった場合
@@ -145,13 +180,14 @@ public struct NotificationScheduler {
         isPremium: Bool,
         now: Date
     ) -> [ScheduledNotification] {
-        // 仕様 4-3 は「出発時刻が変わった場合」の規定なので、前回の値が無ければ何も出さない。
-        guard let previous, previous != departureTime else { return [] }
-
+        // 出発時刻が既に過ぎている → 緊急通知。プランを問わず、初回の算出でも出す。
+        // ユーザーから見れば初回でも変更後でも「もう出ないと間に合わない」ことに変わりがない。
         if departureTime <= now {
-            // 新しい出発時刻が既に過ぎている → 緊急通知。プランを問わない。
             return [ScheduledNotification(key: plan.key, kind: .departureAlreadyPassed, fireDate: now)]
         }
+
+        // ここから先は「変わった場合」の規定なので、前回の値が無ければ何も出さない。
+        guard let previous, previous != departureTime else { return [] }
 
         if isPremium, previous.timeIntervalSince(departureTime) >= earlierNotificationThreshold {
             // Premium で出発時刻が10分以上早まった → 即時通知。

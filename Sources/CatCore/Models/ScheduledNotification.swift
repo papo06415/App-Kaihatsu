@@ -1,7 +1,7 @@
 import Foundation
 
 /// 通知の種別。
-public enum NotificationKind: String, Codable, Equatable {
+public enum NotificationKind: String, Codable, Equatable, CaseIterable {
     /// 開始1.5時間前（Premium）。
     case ninetyMinutesBeforeStart
     /// 開始1時間前（Premium）。
@@ -18,6 +18,8 @@ public enum NotificationKind: String, Codable, Equatable {
     case departureAlreadyPassed
     /// 移動時間を取得できなかった。
     case travelTimeUnavailable
+    /// 場所が分からなかった（座標を解決できなかった）。
+    case locationUnavailable
 }
 
 /// 登録する通知1件。
@@ -40,7 +42,14 @@ public struct ScheduledNotification: Equatable {
     ///
     /// UNUserNotificationCenter は同じ identifier で登録すると差し替えになるので、
     /// 出発時刻が変わったときは登録し直すだけで古い通知が消える。
-    public var identifier: String {
+    public var identifier: String { Self.identifier(for: key, kind: kind) }
+
+    /// ある予定について考えられる全種別の identifier。取り消しに使う。
+    public static func allIdentifiers(for key: EventKey) -> [String] {
+        NotificationKind.allCases.map { identifier(for: key, kind: $0) }
+    }
+
+    static func identifier(for key: EventKey, kind: NotificationKind) -> String {
         let occurrence = key.occurrenceDate.map { String($0.timeIntervalSince1970) } ?? "-"
         return "\(key.eventIdentifier)|\(occurrence)|\(kind.rawValue)"
     }
@@ -50,6 +59,7 @@ public struct ScheduledNotification: Equatable {
         kind == .departureMovedEarlier
             || kind == .departureAlreadyPassed
             || kind == .travelTimeUnavailable
+            || kind == .locationUnavailable
     }
 }
 
@@ -59,9 +69,16 @@ public struct NotificationPlan: Equatable {
     public let notifications: [ScheduledNotification]
     /// 今回算出された出発時刻。次回の起動で「10分以上早まったか」を判定するために保存する。
     public let departureTimes: [EventKey: Date]
+    /// 取り消すべき通知の identifier。完了した予定の未発火の通知。
+    public let cancelledIdentifiers: [String]
 
-    public init(notifications: [ScheduledNotification], departureTimes: [EventKey: Date]) {
+    public init(
+        notifications: [ScheduledNotification],
+        departureTimes: [EventKey: Date],
+        cancelledIdentifiers: [String] = []
+    ) {
         self.notifications = notifications
         self.departureTimes = departureTimes
+        self.cancelledIdentifiers = cancelledIdentifiers
     }
 }

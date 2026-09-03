@@ -61,7 +61,7 @@ swift test
 このリポジトリは Swift 6.0.3（Ubuntu 24.04, x86_64）で検証済み。
 
 ```
-Executed 174 tests, with 0 failures
+Executed 192 tests, with 0 failures
 ```
 
 `CatPlatform` は Linux 上では `#if canImport(EventKit)` が偽になるため中身が空になる。
@@ -84,8 +84,8 @@ Executed 174 tests, with 0 failures
 | `TravelModeSelectorTests` | 11 | 1.5km 境界、電車/車の選択、距離の算出 |
 | `DeparturePlannerTests` | 18 | 出発時刻、出発地点の連鎖、取得失敗、逐次実行 |
 | `DeparturePlannerLaunchResultTests` | 7 | LaunchResult を入力にした統合 |
-| `NotificationSchedulerTests` | 24 | Free/Premium のタイミング、変更時、過去の除外 |
-| `NotificationSchedulerRegistrationTests` | 4 | 登録の経路、翌日ぶん、identifier |
+| `NotificationSchedulerTests` | 36 | Free/Premium のタイミング、変更時、過去の除外 |
+| `NotificationSchedulerRegistrationTests` | 10 | 登録の経路、翌日ぶん、identifier |
 
 ## Mac 上で追加が必要なこと
 

@@ -67,6 +67,24 @@ public struct Repository {
         try saveSnapshots(snapshots)
     }
 
+    /// 前回算出した出発時刻。スナップショットから引く。
+    public func departureTimes() -> [EventKey: Date] {
+        loadSnapshots().compactMapValues(\.lastDepartureTime)
+    }
+
+    /// 算出した出発時刻を記録する。次回の「10分以上早まったか」の判定に使う。
+    /// スナップショットが無いキーは無視する。
+    public func recordDepartureTimes(_ times: [EventKey: Date]) throws {
+        guard !times.isEmpty else { return }
+        var snapshots = loadSnapshots()
+        for (key, time) in times {
+            guard var snapshot = snapshots[key] else { continue }
+            snapshot.lastDepartureTime = time
+            snapshots[key] = snapshot
+        }
+        try saveSnapshots(snapshots)
+    }
+
     // MARK: - 枠
     //
     // [Date: DailySlots] も同じ理由で配列として保存する（Date は JSON のキーになれない）。

@@ -33,12 +33,14 @@ final class NotificationSchedulerTests: XCTestCase {
         _ plans: [DeparturePlan],
         isPremium: Bool,
         previous: [EventKey: Date] = [:],
+        completed: Set<EventKey> = [],
         now: Date? = nil
     ) -> NotificationPlan {
         scheduler.plan(
             plans: plans,
             isPremium: isPremium,
             previousDepartureTimes: previous,
+            completedKeys: completed,
             now: now ?? at(1, 6)
         )
     }
@@ -91,18 +93,48 @@ final class NotificationSchedulerTests: XCTestCase {
         XCTAssertFalse(result.notifications.contains { $0.kind == .start })
     }
 
-    /// 出発時刻が開始1.5時間前より後（＝リードタイムの通知に挟まれる）場合。
-    /// 出発時刻がちょうど 30分前 と重なると、同じ時刻に2件登録される。
-    /// 重複したときの扱いは仕様に記載が無いため、まとめずそのまま出している。
-    func testDepartureCollidingWithALeadTimeProducesTwoNotificationsAtTheSameInstant() {
+    /// 出発時刻がリードタイムとちょうど重なったら1件にまとめ、departure を優先する。
+    func testDepartureCollidingWithALeadTimeIsMergedIntoDeparture() {
         // 移動時間20分 + バッファ10分 = 開始30分前ちょうど。
         let target = scheduledPlan(start: at(1, 10), departure: at(1, 9, 30))
 
         let result = plan([target], isPremium: true)
         let atThirty = result.notifications.filter { $0.fireDate == at(1, 9, 30) }
 
-        XCTAssertEqual(atThirty.count, 2, "仕様に重複の規定が無いのでまとめていない")
-        XCTAssertEqual(Set(atThirty.map(\.kind)), [.thirtyMinutesBeforeStart, .departure])
+        XCTAssertEqual(atThirty.count, 1, "同じ時刻には1件だけ")
+        XCTAssertEqual(atThirty.first?.kind, .departure, "出発時刻を優先する")
+        XCTAssertEqual(result.notifications.count, 3, "4件ぶんの候補が3件にまとまる")
+    }
+
+    func testDepartureCollidingWithTheOneHourLeadTimeIsMergedToo() {
+        // 移動時間50分 + バッファ10分 = 開始1時間前ちょうど。
+        let target = scheduledPlan(start: at(1, 10), departure: at(1, 9))
+
+        let result = plan([target], isPremium: true)
+        let atOneHour = result.notifications.filter { $0.fireDate == at(1, 9) }
+
+        XCTAssertEqual(atOneHour.map(\.kind), [.departure])
+    }
+
+    func testDepartureCollidingWithTheNinetyMinuteLeadTimeIsMergedToo() {
+        // 移動時間80分 + バッファ10分 = 開始1.5時間前ちょうど。
+        let target = scheduledPlan(start: at(1, 10), departure: at(1, 8, 30))
+
+        let result = plan([target], isPremium: true)
+        let atNinety = result.notifications.filter { $0.fireDate == at(1, 8, 30) }
+
+        XCTAssertEqual(atNinety.map(\.kind), [.departure])
+    }
+
+    /// 別々の予定が同じ時刻になっても、まとめるのは同じ予定の中だけ。
+    func testCollisionsAcrossDifferentEventsAreNotMerged() {
+        let first = scheduledPlan("a", start: at(1, 10), departure: at(1, 9, 30))
+        let second = scheduledPlan("b", start: at(1, 12), departure: at(1, 9, 30))
+
+        let result = plan([first, second], isPremium: false)
+        let collided = result.notifications.filter { $0.fireDate == at(1, 9, 30) }
+
+        XCTAssertEqual(collided.count, 2)
     }
 
     /// 出発時刻が開始1.5時間前より前でも、リードタイムの通知は変わらず出る。
@@ -118,10 +150,11 @@ final class NotificationSchedulerTests: XCTestCase {
     // MARK: - 既に過ぎたタイミング
 
     func testTimingsAlreadyInThePastAreNotScheduled() {
-        // 9:40 時点。出発 9:25 は過ぎている。開始 10:00 はまだ。
+        // 9:40 時点。出発 9:25 は過ぎているので登録されず、代わりに緊急通知になる。
         let result = plan([scheduledPlan()], isPremium: false, now: at(1, 9, 40))
 
-        XCTAssertEqual(result.notifications.map(\.kind), [.start])
+        XCTAssertEqual(result.notifications.map(\.kind), [.departureAlreadyPassed, .start])
+        XCTAssertFalse(result.notifications.contains { $0.kind == .departure })
     }
 
     func testPremiumTimingsAlreadyInThePastAreNotScheduled() {
@@ -132,9 +165,11 @@ final class NotificationSchedulerTests: XCTestCase {
     }
 
     func testATimingExactlyAtNowIsNotScheduled() {
+        // 出発時刻ちょうど。定期の通知としては登録されない。
         let result = plan([scheduledPlan()], isPremium: false, now: at(1, 9, 25))
 
-        XCTAssertEqual(result.notifications.map(\.kind), [.start])
+        XCTAssertFalse(result.notifications.contains { $0.kind == .departure })
+        XCTAssertTrue(result.notifications.contains { $0.kind == .start })
     }
 
     // MARK: - 出発時刻が変わった場合
@@ -221,13 +256,29 @@ final class NotificationSchedulerTests: XCTestCase {
         XCTAssertTrue(result.notifications.contains { $0.kind == .departureAlreadyPassed })
     }
 
-    /// 前回の値が無い（初回の算出）ときは、変更ではないので即時も緊急も出さない。
-    func testFirstCalculationProducesNoChangeNotifications() {
+    /// 初回の算出でも、出発時刻が既に過ぎていれば緊急通知を出す。
+    /// ユーザーから見れば初回でも変更後でも「もう出ないと間に合わない」ことに変わりがない。
+    func testFirstCalculationWithAPastDepartureStillProducesTheUrgentNotification() {
         let target = scheduledPlan(start: at(1, 10), departure: at(1, 8, 30))
         let result = plan([target], isPremium: true, previous: [:], now: at(1, 8, 45))
 
+        XCTAssertTrue(result.notifications.contains { $0.kind == .departureAlreadyPassed })
+        XCTAssertFalse(result.notifications.contains { $0.kind == .departureMovedEarlier })
+    }
+
+    /// 初回の算出で出発時刻がまだ先なら、即時も緊急も出さない。
+    func testFirstCalculationWithAFutureDepartureProducesNoChangeNotifications() {
+        let result = plan([scheduledPlan()], isPremium: true, previous: [:], now: at(1, 6))
+
         XCTAssertFalse(result.notifications.contains { $0.kind == .departureAlreadyPassed })
         XCTAssertFalse(result.notifications.contains { $0.kind == .departureMovedEarlier })
+    }
+
+    func testFreeAlsoGetsTheUrgentNotificationOnAFirstCalculation() {
+        let target = scheduledPlan(start: at(1, 10), departure: at(1, 8, 30))
+        let result = plan([target], isPremium: false, previous: [:], now: at(1, 8, 45))
+
+        XCTAssertTrue(result.notifications.contains { $0.kind == .departureAlreadyPassed })
     }
 
     func testUnchangedDepartureProducesNoChangeNotifications() {
@@ -253,6 +304,87 @@ final class NotificationSchedulerTests: XCTestCase {
         XCTAssertEqual(result.notifications.map(\.kind), [.travelTimeUnavailable])
         XCTAssertEqual(result.notifications.first?.fireDate, at(1, 8))
         XCTAssertTrue(result.departureTimes.isEmpty)
+    }
+
+    // MARK: - 場所が分からなかった場合
+
+    func testLocationUnavailableProducesItsOwnNotification() {
+        let target = DeparturePlan(
+            key: Fixture.key("a"),
+            startDate: at(1, 10),
+            origin: .home(placeA),
+            outcome: .destinationLocationUnavailable
+        )
+
+        let result = plan([target], isPremium: false, now: at(1, 8))
+
+        XCTAssertEqual(result.notifications.map(\.kind), [.locationUnavailable])
+        XCTAssertEqual(result.notifications.first?.fireDate, at(1, 8), "即時に送る")
+        XCTAssertTrue(result.departureTimes.isEmpty)
+    }
+
+    func testLocationUnavailableIsSentForPremiumToo() {
+        let target = DeparturePlan(
+            key: Fixture.key("a"),
+            startDate: at(1, 10),
+            origin: .home(placeA),
+            outcome: .destinationLocationUnavailable
+        )
+
+        XCTAssertEqual(
+            plan([target], isPremium: true, now: at(1, 8)).notifications.map(\.kind),
+            [.locationUnavailable]
+        )
+    }
+
+    /// 自宅が未設定のときだけ起きる。オンボーディングで必須にしているので通常は発生しない。
+    func testOriginUnavailableProducesNoNotification() {
+        let target = DeparturePlan(
+            key: Fixture.key("a"),
+            startDate: at(1, 10),
+            origin: .unavailable,
+            outcome: .originUnavailable
+        )
+
+        XCTAssertTrue(plan([target], isPremium: true).notifications.isEmpty)
+    }
+
+    // MARK: - 完了した予定
+
+    func testCompletedEventHasItsPendingNotificationsCancelled() {
+        let target = scheduledPlan()
+
+        let result = plan([target], isPremium: true, completed: [target.key])
+
+        XCTAssertTrue(result.notifications.isEmpty, "新しい通知は出さない")
+        XCTAssertEqual(
+            Set(result.cancelledIdentifiers),
+            Set(ScheduledNotification.allIdentifiers(for: target.key))
+        )
+    }
+
+    func testCancellationCoversEveryNotificationKind() {
+        let target = scheduledPlan()
+
+        let result = plan([target], isPremium: true, completed: [target.key])
+
+        XCTAssertEqual(result.cancelledIdentifiers.count, NotificationKind.allCases.count)
+    }
+
+    func testOnlyCompletedEventsAreCancelled() {
+        let completed = scheduledPlan("done", start: at(1, 10))
+        let upcoming = scheduledPlan("next", start: at(1, 15))
+
+        let result = plan([completed, upcoming], isPremium: false, completed: [completed.key])
+
+        XCTAssertEqual(Set(result.notifications.map(\.key)), [upcoming.key])
+        XCTAssertTrue(result.cancelledIdentifiers.allSatisfy { $0.hasPrefix("done|") })
+    }
+
+    func testNothingIsCancelledWhenNoEventIsCompleted() {
+        let result = plan([scheduledPlan()], isPremium: false)
+
+        XCTAssertTrue(result.cancelledIdentifiers.isEmpty)
     }
 
     // MARK: - 対象外

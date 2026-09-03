@@ -45,6 +45,11 @@ public final class UserNotificationScheduler: NotificationScheduling {
         try? await center.add(request)
     }
 
+    public func removeAll(withIdentifiers identifiers: [String]) async {
+        // 未発火のものだけが対象。既に配信済みの通知は消さない。
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+
     private static func trigger(at date: Date, calendar: Calendar) -> UNNotificationTrigger {
         let components = calendar.dateComponents(
             [.year, .month, .day, .hour, .minute, .second],

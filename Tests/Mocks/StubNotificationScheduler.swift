@@ -5,8 +5,14 @@ import Foundation
 actor StubNotificationScheduler: NotificationScheduling {
     private(set) var added: [ScheduledNotification] = []
 
+    private(set) var removed: [String] = []
+
     func add(_ notification: ScheduledNotification) async {
         added.append(notification)
+    }
+
+    func removeAll(withIdentifiers identifiers: [String]) async {
+        removed.append(contentsOf: identifiers)
     }
 
     var identifiers: [String] { added.map(\.identifier) }

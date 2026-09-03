@@ -105,4 +105,133 @@ final class NotificationSchedulerRegistrationTests: XCTestCase {
         XCTAssertEqual(firstDeparture?.identifier, secondDeparture?.identifier)
         XCTAssertNotEqual(firstDeparture?.fireDate, secondDeparture?.fireDate)
     }
+
+    // MARK: - 前回の出発時刻の保存（EventSnapshot 経由）
+
+    private func repositoryWithSnapshot(for key: EventKey, startDate: Date) -> Repository {
+        let repository = Repository(store: InMemoryFileStore())
+        let snapshot = EventSnapshot(
+            key: key,
+            startDate: startDate,
+            endDate: startDate.addingTimeInterval(3600)
+        )
+        try? repository.saveSnapshots([key: snapshot])
+        return repository
+    }
+
+    /// 保存 → 読み出し → 判定 まで通しで、10分以上早まったら即時通知が入ること。
+    func testStoredDepartureTimeDrivesTheImmediateNotification() async {
+        let key = Fixture.key("a")
+        let repository = repositoryWithSnapshot(for: key, startDate: at(1, 10))
+
+        // 1回目: 出発 9:25 を算出して保存する。
+        let first = scheduler.plan(
+            plans: [scheduledPlan("a", start: at(1, 10), departure: at(1, 9, 25))],
+            isPremium: true,
+            previousDepartureTimes: repository.departureTimes(),
+            now: at(1, 6)
+        )
+        XCTAssertFalse(first.notifications.contains { $0.kind == .departureMovedEarlier })
+        try? repository.recordDepartureTimes(first.departureTimes)
+
+        XCTAssertEqual(repository.departureTimes()[key], at(1, 9, 25), "スナップショットに残る")
+
+        // 2回目: 出発が 9:10 に早まった（15分）。
+        let second = scheduler.plan(
+            plans: [scheduledPlan("a", start: at(1, 10), departure: at(1, 9, 10))],
+            isPremium: true,
+            previousDepartureTimes: repository.departureTimes(),
+            now: at(1, 6, 30)
+        )
+
+        XCTAssertTrue(
+            second.notifications.contains { $0.kind == .departureMovedEarlier },
+            "保存した値と比較して即時通知が入る"
+        )
+    }
+
+    /// 同じ通しで、10分未満の変化では即時通知が入らないこと。
+    func testStoredDepartureTimeDoesNotTriggerForSmallChanges() {
+        let key = Fixture.key("a")
+        let repository = repositoryWithSnapshot(for: key, startDate: at(1, 10))
+
+        let first = scheduler.plan(
+            plans: [scheduledPlan("a", start: at(1, 10), departure: at(1, 9, 25))],
+            isPremium: true,
+            previousDepartureTimes: repository.departureTimes(),
+            now: at(1, 6)
+        )
+        try? repository.recordDepartureTimes(first.departureTimes)
+
+        // 9分早まっただけ。
+        let second = scheduler.plan(
+            plans: [scheduledPlan("a", start: at(1, 10), departure: at(1, 9, 16))],
+            isPremium: true,
+            previousDepartureTimes: repository.departureTimes(),
+            now: at(1, 6, 30)
+        )
+
+        XCTAssertFalse(second.notifications.contains { $0.kind == .departureMovedEarlier })
+    }
+
+    func testRecordingIgnoresKeysWithoutASnapshot() {
+        let repository = Repository(store: InMemoryFileStore())
+
+        XCTAssertNoThrow(try repository.recordDepartureTimes([Fixture.key("ghost"): at(1, 9)]))
+        XCTAssertTrue(repository.departureTimes().isEmpty)
+    }
+
+    /// 変更検知はこの値に触れない（枠の判定と同じく持ち回るだけ）。
+    func testChangeDetectionPreservesTheStoredDepartureTime() {
+        let event = Fixture.event("a", start: at(1, 10))
+        var snapshot = EventSnapshot(event: event)
+        snapshot.lastDepartureTime = at(1, 9, 25)
+
+        let moved = Fixture.event("a", start: at(1, 11))
+        let result = ChangeDetector().detectChanges(
+            events: [moved],
+            snapshots: [event.key: snapshot],
+            now: at(1, 6)
+        )
+
+        XCTAssertEqual(result.updated[event.key]?.editCount, 1)
+        XCTAssertEqual(result.updated[event.key]?.lastDepartureTime, at(1, 9, 25))
+    }
+
+    // MARK: - 取り消しの登録
+
+    func testCompletedEventsPendingNotificationsAreRemovedThroughTheScheduler() async {
+        let target = scheduledPlan("done", start: at(1, 10), departure: at(1, 9, 25))
+        let plan = scheduler.plan(
+            plans: [target],
+            isPremium: true,
+            previousDepartureTimes: [:],
+            completedKeys: [target.key],
+            now: at(1, 6)
+        )
+        let stub = StubNotificationScheduler()
+
+        await scheduler.register(plan, using: stub)
+
+        let removed = await stub.removed
+        let added = await stub.added
+        XCTAssertEqual(Set(removed), Set(ScheduledNotification.allIdentifiers(for: target.key)))
+        XCTAssertTrue(added.isEmpty, "完了した予定には新しい通知を積まない")
+    }
+
+    func testNothingIsRemovedWhenNoEventIsCompleted() async {
+        let target = scheduledPlan("a", start: at(1, 10), departure: at(1, 9, 25))
+        let plan = scheduler.plan(
+            plans: [target],
+            isPremium: false,
+            previousDepartureTimes: [:],
+            now: at(1, 6)
+        )
+        let stub = StubNotificationScheduler()
+
+        await scheduler.register(plan, using: stub)
+
+        let removed = await stub.removed
+        XCTAssertTrue(removed.isEmpty)
+    }
 }

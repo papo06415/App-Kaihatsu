@@ -147,7 +147,13 @@ public struct DeparturePlanner {
             )
 
             let outcome: DeparturePlan.Outcome
-            switch await service.travelTime(from: originLocation, to: destination, mode: selection.mode) {
+            // 到着していたい時刻＝予定の開始時刻。バッファはこのあと別に引く。
+            switch await service.travelTime(
+                from: originLocation,
+                to: destination,
+                mode: selection.mode,
+                arrivalDate: event.startDate
+            ) {
             case .available(let travelTime):
                 // 出発時刻 = 開始時刻 − 移動時間 − バッファ
                 outcome = .scheduled(

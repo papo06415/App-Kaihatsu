@@ -13,15 +13,22 @@ public final class MapKitTravelTimeService: TravelTimeService {
     public func travelTime(
         from: EventLocation,
         to: EventLocation,
-        mode: TravelMode
+        mode: TravelMode,
+        arrivalDate: Date
     ) async -> TravelTimeResult {
         let request = MKDirections.Request()
         request.source = Self.mapItem(for: from)
         request.destination = Self.mapItem(for: to)
         request.transportType = Self.transportType(for: mode)
-        // 出発時刻・到着時刻は指定していない。どちらを基準に経路を引くべきかが
-        // 仕様に無いため（README の「確認が必要な項目」を参照）。
-        // 未指定のとき MapKit は現在時刻を基準にする。
+        // 到着時刻を指定する。知りたいのは「その時刻に着くには何分かかるか」だから。
+        // 未指定だと MapKit は現在時刻を基準にするので、翌朝の予定を深夜のダイヤで
+        // 計算してしまう。
+        //
+        // 交通手段で出し分けていないのは、Apple のドキュメントが arrivalDate を
+        // 「サーバーが経路を最適化するための追加情報」としか説明しておらず、交通機関に
+        // 限る記述も徒歩で無視されるという記述も無いため。分岐は MapKit の内部挙動を
+        // 推測することになる。
+        request.arrivalDate = arrivalDate
 
         do {
             let response = try await MKDirections(request: request).calculateETA()
@@ -38,6 +45,9 @@ public final class MapKitTravelTimeService: TravelTimeService {
             latitude: location.latitude,
             longitude: location.longitude
         )
+        // MKMapItem(placemark:) は新しい SDK で非推奨（代替は init(location:address:)）だが、
+        // 代替は iOS 26 以降。このパッケージのデプロイメントターゲットは iOS 17 なので
+        // こちらを使う。新しい SDK でビルドすると非推奨の警告が出る。
         return MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
     }
 

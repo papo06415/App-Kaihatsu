@@ -12,5 +12,14 @@ public enum TravelTimeResult: Equatable {
 
 /// 2地点間の移動時間を取得する。実装は CatPlatform（MKDirections）側に置く。
 public protocol TravelTimeService {
-    func travelTime(from: EventLocation, to: EventLocation, mode: TravelMode) async -> TravelTimeResult
+    /// - Parameter arrivalDate: 到着していたい時刻。予定の開始時刻を渡す。
+    ///
+    ///   知りたいのは「その時刻に着くには何分かかるか」なので、現在時刻ではなく到着時刻を
+    ///   基準にする。現在時刻基準だと、翌朝の予定を深夜のダイヤで計算してしまう。
+    func travelTime(
+        from: EventLocation,
+        to: EventLocation,
+        mode: TravelMode,
+        arrivalDate: Date
+    ) async -> TravelTimeResult
 }

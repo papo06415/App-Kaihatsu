@@ -9,6 +9,7 @@ actor StubTravelTimeService: TravelTimeService {
         let from: EventLocation
         let to: EventLocation
         let mode: TravelMode
+        let arrivalDate: Date
     }
 
     /// 目的地の緯度経度をキーにした個別の応答。未登録なら `defaultResult` を返す。
@@ -31,8 +32,13 @@ actor StubTravelTimeService: TravelTimeService {
         "\(location.latitude),\(location.longitude)"
     }
 
-    func travelTime(from: EventLocation, to: EventLocation, mode: TravelMode) async -> TravelTimeResult {
-        calls.append(Call(from: from, to: to, mode: mode))
+    func travelTime(
+        from: EventLocation,
+        to: EventLocation,
+        mode: TravelMode,
+        arrivalDate: Date
+    ) async -> TravelTimeResult {
+        calls.append(Call(from: from, to: to, mode: mode, arrivalDate: arrivalDate))
         activeCalls += 1
         maxConcurrentCalls = max(maxConcurrentCalls, activeCalls)
         for _ in 0..<4 { await Task.yield() }
@@ -43,4 +49,5 @@ actor StubTravelTimeService: TravelTimeService {
     var callCount: Int { calls.count }
     var origins: [EventLocation] { calls.map(\.from) }
     var modes: [TravelMode] { calls.map(\.mode) }
+    var arrivalDates: [Date] { calls.map(\.arrivalDate) }
 }

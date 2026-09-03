@@ -92,6 +92,54 @@ final class DeparturePlannerTests: XCTestCase {
         }
     }
 
+    // MARK: - 到着時刻の指定
+    //
+    // arrivalDate を MKDirections に渡すのは CatPlatform 側なので Linux では検証できない。
+    // ここで確かめられるのは「プロトコルに何を渡しているか」まで。
+
+    func testArrivalDateIsTheEventStartTime() async {
+        let service = StubTravelTimeService()
+        let target = event("a", 10, location: placeA)
+
+        _ = await plan([target], home: home, service: service)
+
+        let arrivals = await service.arrivalDates
+        XCTAssertEqual(arrivals, [at(10)], "バッファを引く前の開始時刻を渡す")
+    }
+
+    /// 交通手段によらず到着時刻を渡す。
+    func testArrivalDateIsPassedForEveryTravelMode() async {
+        let nearby = EventLocation(latitude: home.latitude + 0.005, longitude: home.longitude, name: "近所")
+
+        for (transport, destination, expectedMode) in [
+            (PrimaryTransport.transit, nearby, TravelMode.walking),
+            (PrimaryTransport.transit, placeB, TravelMode.transit),
+            (PrimaryTransport.automobile, placeB, TravelMode.automobile)
+        ] {
+            let service = StubTravelTimeService()
+            let target = event("a", 10, location: destination)
+            _ = await plan([target], home: home, transport: transport, service: service)
+
+            let calls = await service.calls
+            XCTAssertEqual(calls.map(\.mode), [expectedMode])
+            XCTAssertEqual(calls.map(\.arrivalDate), [at(10)], "\(expectedMode) でも到着時刻を渡す")
+        }
+    }
+
+    func testEachEventGetsItsOwnArrivalDate() async {
+        let service = StubTravelTimeService()
+        let events = [
+            event("a", 9, location: placeA),
+            event("b", 13, location: placeB),
+            event("c", 18, location: placeA)
+        ]
+
+        _ = await plan(events, home: home, service: service)
+
+        let arrivals = await service.arrivalDates
+        XCTAssertEqual(arrivals, [at(9), at(13), at(18)])
+    }
+
     // MARK: - 出発地点の連鎖
 
     func testFirstSupportedEventStartsFromHome() async {

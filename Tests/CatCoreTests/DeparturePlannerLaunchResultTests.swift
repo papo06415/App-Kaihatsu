@@ -100,6 +100,20 @@ final class DeparturePlannerLaunchResultTests: XCTestCase {
         XCTAssertEqual(result.tomorrow.first?.departureTime, at(2, 0, 20))
     }
 
+    /// 翌日の予定にも、その予定自身の開始時刻を到着時刻として渡す。
+    /// 今日のうちに計算しても、深夜のダイヤで引いてしまわないようにするため。
+    func testTomorrowEventsUseTheirOwnStartTimeAsArrivalDate() async {
+        let today = Fixture.event("today", start: at(1, 10), location: placeA)
+        let earlyTomorrow = Fixture.event("early", start: at(2, 1), location: placeB)
+        let launch = launchResult(todayEvents: [today], tomorrowEvents: [earlyTomorrow])
+        let service = StubTravelTimeService()
+
+        _ = await planner.plan(launch: launch, preferences: preferences, service: service)
+
+        let arrivals = await service.arrivalDates
+        XCTAssertEqual(arrivals, [at(1, 10), at(2, 1)])
+    }
+
     /// 連鎖は日ごとに独立している（その日の最初は自宅から）。
     func testEachDayStartsItsChainFromHome() async {
         let today = Fixture.event("today", start: at(1, 10), location: placeA)

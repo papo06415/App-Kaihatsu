@@ -120,6 +120,7 @@ public struct SlotConfirmer {
             supportSentKeys: supportSentKeys,
             registrationOrdered: registrationOrdered,
             dayStart: dayStart,
+            now: now,
             limit: limit
         )
     }
@@ -165,6 +166,7 @@ public struct SlotConfirmer {
         supportSentKeys: Set<EventKey>,
         registrationOrdered: [CalendarEvent],
         dayStart: Date,
+        now: Date,
         limit: Int
     ) -> DailySlots {
         // 枠の解放。取得結果から消えた予定（外部で削除された／別の日に移動した）を外す。
@@ -178,11 +180,16 @@ public struct SlotConfirmer {
 
         var confirmed = accounting.keptKeys
         if accounting.additionBudget > 0 {
+            // 対象日が今日なら、既に開始した予定は追加しない。第1段階と同じ救済。
+            // 既に枠を持っている予定は accounting.keptKeys 側で守られるので、ここで
+            // 落としても枠を失うことはない。
+            let excludesStarted = calendar.isDate(dayStart, inSameDayAs: now)
             var taken = Set(confirmed)
             var added = 0
             for event in registrationOrdered {
                 guard added < accounting.additionBudget else { break }
                 guard eligibleKeys.contains(event.key), !taken.contains(event.key) else { continue }
+                if excludesStarted, event.startDate < now { continue }
                 confirmed.append(event.key)
                 taken.insert(event.key)
                 added += 1

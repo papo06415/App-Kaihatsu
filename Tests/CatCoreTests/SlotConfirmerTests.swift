@@ -156,6 +156,53 @@ final class SlotConfirmerTests: XCTestCase {
         XCTAssertEqual(identifiers(second), ["a", "b", "late"], "登録が先の late が空き枠を取る")
     }
 
+    /// 第1段階と同じ救済を第2段階にも適用する。
+    func testSecondStageAlsoSkipsEventsThatAlreadyStarted() {
+        let confirmed = [Fixture.event("a", start: at(9))]
+        let first = confirm(eligible: confirmed)
+
+        // 14:00 に、午前の予定と夕方の予定が両方候補になっている。
+        let past = Fixture.event("past", start: at(11))
+        let future = Fixture.event("future", start: at(18))
+        let second = confirm(
+            eligible: confirmed + [past, future],
+            current: first,
+            now: at(14)
+        )
+
+        XCTAssertEqual(identifiers(second), ["a", "future"])
+        XCTAssertFalse(identifiers(second).contains("past"), "開始済みの予定は追加しない")
+    }
+
+    /// 開始済みでも、既に枠を持っている予定は枠を手放さない。
+    func testAlreadyStartedEventKeepsASlotItAlreadyHolds() {
+        let events = [Fixture.event("a", start: at(9)), Fixture.event("b", start: at(11))]
+        let first = confirm(eligible: events)
+        XCTAssertEqual(identifiers(first), ["a", "b"])
+
+        // 12:00 時点では a も b も開始済みだが、枠は保持される。
+        let second = confirm(eligible: events, current: first, now: at(12))
+
+        XCTAssertEqual(identifiers(second), ["a", "b"])
+    }
+
+    /// 対象日が翌日なら、now より前という条件は効かない（日跨ぎ予定を落とさないため）。
+    func testSecondStageDoesNotSkipPastEventsForTomorrow() {
+        let crossing = crossingEvent
+        let first = confirm(eligible: [crossing], targetDate: tomorrow)
+
+        // 9/2 を対象日にしたまま、9/1 23:30 開始の予定を 9/2 00:30 の時点で見る。
+        let daytime = Fixture.event("daytime", start: at(10, 0, day: 2))
+        let second = confirm(
+            eligible: [crossing, daytime],
+            current: first,
+            targetDate: tomorrow,
+            now: Fixture.date(2026, 9, 1, 20, 0)
+        )
+
+        XCTAssertEqual(identifiers(second), ["crossing", "daytime"])
+    }
+
     // MARK: - 枠の解放
 
     func testDeletingAConfirmedEventFreesItsSlot() {

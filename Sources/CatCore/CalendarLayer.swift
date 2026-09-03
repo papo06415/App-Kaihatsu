@@ -4,6 +4,15 @@ import Foundation
 public struct LaunchResult: Equatable {
     /// 今日に重なる予定（終日予定も含む）。開始時刻順。
     public let todayEvents: [CalendarEvent]
+    /// 翌日に重なる予定（終日予定も含む）。開始時刻順。
+    ///
+    /// Premium は開始1.5時間前から通知するため、翌日の 0:00〜1:30 に始まる予定は
+    /// 今日のうちに出発時刻を計算する必要がある。`tomorrowSlots` はキーしか持たないので、
+    /// 開始時刻と座標を取れるように予定本体を返す。
+    ///
+    /// 翌日ぶんの日跨ぎ判定はここから行える。
+    /// `!calendar.isDate(event.startDate, inSameDayAs: tomorrowSlots.date)` が真なら日跨ぎ。
+    public let tomorrowEvents: [CalendarEvent]
     public let todaySlots: DailySlots
     public let tomorrowSlots: DailySlots
     /// 今日の予定どうしの重複。
@@ -24,6 +33,7 @@ public struct LaunchResult: Equatable {
 
     public init(
         todayEvents: [CalendarEvent],
+        tomorrowEvents: [CalendarEvent],
         todaySlots: DailySlots,
         tomorrowSlots: DailySlots,
         conflicts: [EventConflict],
@@ -34,6 +44,7 @@ public struct LaunchResult: Equatable {
         carriedOverKeys: [EventKey]
     ) {
         self.todayEvents = todayEvents
+        self.tomorrowEvents = tomorrowEvents
         self.todaySlots = todaySlots
         self.tomorrowSlots = tomorrowSlots
         self.conflicts = conflicts
@@ -154,13 +165,16 @@ public struct CalendarLayer {
                 .map { resolvedByKey[$0.key] ?? $0 }
                 .sorted(by: CalendarEvent.isOrderedBefore)
 
-            // 第1段階を今日に対して実行する場合は、既に開始した予定を先に落とす。
-            // SlotConfirmer と同じ条件。ここで落としておかないとジオコーディングの
-            // 呼び出し枠を、枠に入れない予定に使い切ってしまう。
-            if existing?.confirmedAt == nil,
-               calendar.isDate(day, inSameDayAs: now),
-               !preferences.isPremium {
-                candidates = candidates.filter { $0.startDate >= now }
+            // 対象日が今日なら、既に開始した予定は枠の候補から落とす。第1段階・第2段階の
+            // どちらでも同じ扱いにする。これが無いと 14:00 に起動したとき午前の予定が枠を
+            // 埋め、しかも完了済みの予定は枠を解放しないため、その日は一切サポートが
+            // 機能しなくなる。ジオコーディングの呼び出し枠も無駄にしない。
+            //
+            // ただし既に枠を持っている予定は例外。開始済みでも枠は手放さない
+            // （完了済みの予定が枠を保持し続けるルールと同じ）。
+            if calendar.isDate(day, inSameDayAs: now), !preferences.isPremium {
+                let held = Set(existing?.confirmedKeys ?? [])
+                candidates = candidates.filter { held.contains($0.key) || $0.startDate >= now }
             }
 
             if isToday {
@@ -232,6 +246,9 @@ public struct CalendarLayer {
         let todayEvents = events
             .filter { SlotConfirmer.overlaps($0, targetDate: today, calendar: calendar) }
             .sorted(by: CalendarEvent.isOrderedBefore)
+        let tomorrowEvents = events
+            .filter { SlotConfirmer.overlaps($0, targetDate: tomorrow, calendar: calendar) }
+            .sorted(by: CalendarEvent.isOrderedBefore)
         let conflicts = conflictDetector.detectConflicts(in: todayEvents)
 
         // 8. データを保存する。
@@ -246,6 +263,7 @@ public struct CalendarLayer {
 
         return LaunchResult(
             todayEvents: todayEvents,
+            tomorrowEvents: tomorrowEvents,
             todaySlots: slots[today] ?? DailySlots(date: today, confirmedKeys: [], slotLimit: slotLimit),
             tomorrowSlots: slots[tomorrow] ?? DailySlots(date: tomorrow, confirmedKeys: [], slotLimit: slotLimit),
             conflicts: conflicts,

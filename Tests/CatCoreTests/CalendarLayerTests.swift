@@ -308,6 +308,136 @@ final class CalendarLayerTests: XCTestCase {
         XCTAssertEqual(third.todaySlots.confirmedKeys.map(\.eventIdentifier), ["a", "c"])
     }
 
+    // MARK: - tomorrowEvents
+
+    func testTomorrowEventsCarriesTheEventBodiesForTheNextDay() async throws {
+        let today = located("today", at(1, 10))
+        let earlyTomorrow = located("early", at(2, 1))
+        let laterTomorrow = located("later", at(2, 14))
+        let source = MockCalendarSource(events: [today, earlyTomorrow, laterTomorrow])
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        let result = try await layer.refreshOnLaunch(now: at(1, 8))
+
+        XCTAssertEqual(result.tomorrowEvents.map(\.title), ["early", "later"])
+        // 開始時刻と座標が取れること（Premium の 1.5 時間前通知に必要）。
+        let early = try XCTUnwrap(result.tomorrowEvents.first)
+        XCTAssertEqual(early.startDate, at(2, 1))
+        XCTAssertEqual(early.location, Fixture.tokyo)
+        XCTAssertFalse(result.tomorrowEvents.contains { $0.title == "today" })
+    }
+
+    /// 翌日ぶんの日跨ぎ判定が tomorrowEvents と tomorrowSlots.date から行えること。
+    func testCarriedOverCanBeDerivedFromTomorrowEvents() async throws {
+        let crossing = Fixture.event(
+            "crossing",
+            start: at(1, 23, 30),
+            end: at(2, 2, 0),
+            locationText: "L-crossing"
+        )
+        let daytime = located("daytime", at(2, 10))
+        let source = MockCalendarSource(events: [crossing, daytime])
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        let result = try await layer.refreshOnLaunch(now: at(1, 8))
+
+        let calendar = Fixture.calendar
+        let carriedOver = result.tomorrowEvents.filter {
+            !calendar.isDate($0.startDate, inSameDayAs: result.tomorrowSlots.date)
+        }
+        XCTAssertEqual(carriedOver.map(\.title), ["crossing"])
+    }
+
+    func testKeyArraysCoverTodayOnly() async throws {
+        // 翌日に、キー配列のどれかに載りそうな予定を一通り置く。
+        let todayEvent = located("today", at(1, 10))
+        let tomorrowAllDay = Fixture.allDayEvent("tomorrow-allday", day: at(2, 0))
+        let tomorrowNoLocation = Fixture.event("tomorrow-nowhere", start: at(2, 9), locationText: nil)
+        let tomorrowExtra = (10...14).map { located("tomorrow-x\($0)", at(2, $0)) }
+        let source = MockCalendarSource(
+            events: [todayEvent, tomorrowAllDay, tomorrowNoLocation] + tomorrowExtra
+        )
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        let result = try await layer.refreshOnLaunch(now: at(1, 8))
+
+        // 翌日の枠は確定しているが、キー配列には翌日の予定が一切混ざらない。
+        XCTAssertEqual(result.tomorrowSlots.confirmedKeys.count, 3)
+        for keys in [
+            result.editLimitExceededKeys,
+            result.outOfSlotKeys,
+            result.noLocationKeys,
+            result.allDayKeys,
+            result.carriedOverKeys
+        ] {
+            XCTAssertFalse(
+                keys.contains { $0.eventIdentifier.hasPrefix("tomorrow") },
+                "翌日の予定が混入している: \(keys.map(\.eventIdentifier))"
+            )
+        }
+    }
+
+    // MARK: - 開始済みの予定（第1段階・第2段階で同じ扱い）
+
+    func testStartedEventsAreExcludedOnTheSecondStageToo() async throws {
+        let source = MockCalendarSource(events: [located("morning", at(1, 9))])
+        let geocoder = MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        let layer = makeLayer(source: source, geocoder: geocoder)
+
+        // 8:00 に起動して第1段階を確定させる。
+        let first = try await layer.refreshOnLaunch(now: at(1, 8))
+        XCTAssertEqual(first.todaySlots.confirmedKeys.map(\.eventIdentifier), ["morning"])
+
+        // 14:00 に、既に始まった予定が追加される（第2段階）。
+        source.events = [located("morning", at(1, 9)), located("noon", at(1, 12))]
+        let second = try await layer.refreshOnLaunch(now: at(1, 14))
+
+        XCTAssertFalse(
+            second.todaySlots.confirmedKeys.map(\.eventIdentifier).contains("noon"),
+            "開始済みの予定は第2段階でも枠に入らない"
+        )
+        XCTAssertEqual(second.todaySlots.confirmedKeys.map(\.eventIdentifier), ["morning"],
+                       "既に枠を持っている予定は開始済みでも保持する")
+    }
+
+    /// 開始済みの予定は、初回起動でも2回目以降でも同じ扱い（どこにも報告されない）になる。
+    func testStartedEventsAreReportedIdenticallyOnFirstAndLaterLaunches() async throws {
+        let events = [located("morning", at(1, 9)), located("evening", at(1, 18))]
+
+        // ケースA: その日の初回起動が 14:00（第1段階）。
+        let sourceA = MockCalendarSource(events: events)
+        let layerA = makeLayer(
+            source: sourceA,
+            geocoder: MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        )
+        let a = try await layerA.refreshOnLaunch(now: at(1, 14))
+
+        // ケースB: 8:00 に一度起動してから 14:00 に再起動（第2段階）。
+        store = InMemoryFileStore()
+        repository = Repository(store: store)
+        let sourceB = MockCalendarSource(events: [events[1]])
+        let layerB = makeLayer(
+            source: sourceB,
+            geocoder: MockGeocodingService(defaultResult: .resolved(Fixture.tokyo))
+        )
+        _ = try await layerB.refreshOnLaunch(now: at(1, 8))
+        sourceB.events = events
+        let b = try await layerB.refreshOnLaunch(now: at(1, 14))
+
+        for result in [a, b] {
+            let reported = result.todaySlots.confirmedKeys + result.outOfSlotKeys
+                + result.noLocationKeys + result.editLimitExceededKeys
+            XCTAssertFalse(
+                reported.contains { $0.eventIdentifier == "morning" },
+                "開始済みの予定はどこにも報告されない"
+            )
+            XCTAssertTrue(result.todaySlots.confirmedKeys.map(\.eventIdentifier).contains("evening"))
+        }
+    }
+
     // MARK: - 場所なし予定に後から場所が追加された場合
     //
     // 「新たな枠を消費しない」は「1日の上限3件を超えない」という意味。

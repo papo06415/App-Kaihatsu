@@ -56,7 +56,7 @@ swift test
 このリポジトリは Swift 6.0.3（Ubuntu 24.04, x86_64）で検証済み。
 
 ```
-Executed 102 tests, with 0 failures
+Executed 110 tests, with 0 failures
 ```
 
 `CatPlatform` は Linux 上では `#if canImport(EventKit)` が偽になるため中身が空になる。
@@ -71,11 +71,11 @@ Executed 102 tests, with 0 failures
 | `ChangeDetectorTests` | 14 | 編集回数、完了後の凍結、削除、繰り返し予定 |
 | `LocationResolverTests` | 12 | キャッシュ規則、逐次実行、処理順、枠の打ち切り |
 | `MockGeocodingServiceTests` | 1 | 「並行実行を検出できる」ことの確認 |
-| `SlotConfirmerTests` | 22 | 第1/第2段階、枠の解放、日跨ぎ、繰り返し、Premium |
+| `SlotConfirmerTests` | 25 | 第1/第2段階、枠の解放、日跨ぎ、繰り返し、Premium |
 | `ConflictDetectorTests` | 8 | 同時刻/部分重複/境界接触/終日 |
 | `RepositoryTests` | 11 | 往復、壊れた JSON、書き込み失敗 |
 | `RetentionPolicyTests` | 6 | 14日 / 3日 / 24時間 |
-| `CalendarLayerTests` | 23 | 統合（権限・枠・登録順・日跨ぎ・再起動・期限切れ削除） |
+| `CalendarLayerTests` | 28 | 統合（権限・枠・登録順・日跨ぎ・再起動・期限切れ削除） |
 
 ## Mac 上で追加が必要なこと
 

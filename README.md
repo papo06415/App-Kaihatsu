@@ -11,15 +11,18 @@ Package.swift
 Sources/
   CatCore/                   ← Apple 非依存。Linux でテストできる
     Models/                    EventKey / CalendarEvent / EventSnapshot / DailySlots / …
-    Protocols/                 CalendarSource / GeocodingService / FileStore
+    Protocols/                 CalendarSource / GeocodingService / FileStore /
+                               TravelTimeService
     Logic/                     CompletionEvaluator / ChangeDetector / SlotConfirmer /
-                               ConflictDetector / LocationResolver
+                               ConflictDetector / LocationResolver /
+                               TravelModeSelector / DeparturePlanner
     Persistence/               Repository / RetentionPolicy
     CalendarLayer.swift        全体の統合（refreshOnLaunch）
   CatPlatform/               ← Apple 依存。全ソースが #if canImport(EventKit) で囲まれている
     EventKitCalendarSource.swift
     AppleGeocodingService.swift
     ApplicationSupportFileStore.swift
+    MapKitTravelTimeService.swift
 Tests/
   CatCoreTests/              CatCore にのみ依存する（CatPlatform には依存させない）
   Mocks/                     MockCalendarSource / MockGeocodingService / InMemoryFileStore
@@ -56,7 +59,7 @@ swift test
 このリポジトリは Swift 6.0.3（Ubuntu 24.04, x86_64）で検証済み。
 
 ```
-Executed 110 tests, with 0 failures
+Executed 146 tests, with 0 failures
 ```
 
 `CatPlatform` は Linux 上では `#if canImport(EventKit)` が偽になるため中身が空になる。
@@ -76,6 +79,9 @@ Executed 110 tests, with 0 failures
 | `RepositoryTests` | 11 | 往復、壊れた JSON、書き込み失敗 |
 | `RetentionPolicyTests` | 6 | 14日 / 3日 / 24時間 |
 | `CalendarLayerTests` | 28 | 統合（権限・枠・登録順・日跨ぎ・再起動・期限切れ削除） |
+| `TravelModeSelectorTests` | 11 | 1.5km 境界、電車/車の選択、距離の算出 |
+| `DeparturePlannerTests` | 18 | 出発時刻、出発地点の連鎖、取得失敗、逐次実行 |
+| `DeparturePlannerLaunchResultTests` | 7 | LaunchResult を入力にした統合 |
 
 ## Mac 上で追加が必要なこと
 
@@ -166,9 +172,14 @@ CatPlatform は Linux 上で一度もコンパイルされていない。Mac に
    - `EKEvent.occurrenceDate` を非オプショナルの `Date` として受けている。
    - `EKCalendarItem.hasRecurrenceRules` / `EKEvent.isDetached` の綴りと意味。
    - `MKError.Code` の `.loadingThrottled` / `.serverFailure` の綴り。
+   - `MKDirections.calculateETA()`（async 版）のシグネチャ。完了ハンドラ版は iOS 7 から
+     あることを確認済み。
+   - `MKMapItem(placemark:)` は新しい SDK で非推奨（警告が出る）。代替の
+     `init(location:address:)` は iOS 26 以降なので、デプロイメントターゲットが
+     iOS 17 のうちは移行できない。
 2. **CatPlatform のテストが無い。** Linux では実行できないため。Mac 側で
    `EKEvent → CalendarEvent` の変換（特に繰り返し判定と `structuredLocation` の
    有無での分岐）と、`AppleGeocodingService` のエラー分類にはテストを足したほうがいい。
-3. **後続フェーズのもの**（移動時間、天気、通知、UI、週次サマリー）は未実装。
+3. **後続フェーズのもの**（天気、通知、UI、週次サマリー）は未実装。
    `EventSnapshot.supportSentAt` に値を入れるのも通知フェーズの仕事で、
    `Repository.markSupportSent(for:at:)` を呼び口として用意してある。

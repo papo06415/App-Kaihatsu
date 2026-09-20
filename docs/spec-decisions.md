@@ -324,6 +324,135 @@ let carriedOver = result.tomorrowEvents.filter {
 
 ---
 
+## 決定11: 移動時間の取得はプロトコルで抽象化する
+
+### 決定
+
+```swift
+public protocol TravelTimeService {
+    func travelTime(from: EventLocation, to: EventLocation, mode: TravelMode) async -> TravelTimeResult
+}
+```
+
+`CatCore.DeparturePlanner` はこのプロトコルしか知らない。MKDirections を呼ぶ
+`MapKitTravelTimeService` は `CatPlatform` に置き、`#if canImport(MapKit)` で囲む。
+
+### 理由
+
+カレンダー層の `CalendarSource` / `GeocodingService` / `FileStore` と同じ分離。
+MKDirections はネットワークを叩くうえ Apple 専用なので、これを直接呼ぶコードに
+出発時刻の計算が混ざると Linux で検証できなくなる。
+
+移動時間は「与えられた値」として受け取り、距離の判定・交通手段の選択・出発時刻の算出・
+出発地点の連鎖はすべて純粋な計算にしてある。
+
+### 直線距離の求め方
+
+大円距離（Haversine、IUGG 平均地球半径 6,371,008.8m）。CoreLocation の
+`CLLocation.distance(from:)` は WGS84 の測地線距離なので、同じ2点でも数メートル違う。
+1.5km の境界付近では判定が分かれうる。Linux でテストできることを優先した。
+
+距離の算出（`straightLineDistanceMeters`）と距離の分類（`mode(forDistanceMeters:)`）は
+分けてある。緯度経度から「ちょうど 1500.0m」の地点は浮動小数点の丸めで作れないため、
+境界の扱いは距離を直接与えて検証している。
+
+### 移動時間の取得は逐次
+
+1件ずつ順番に await する。ジオコーディングと同じくレート制限があるため。
+出発地点の連鎖は前の予定の「場所」にしか依存しないので並行実行も可能だが、そうしていない。
+
+---
+
+## 決定12: 移動時間を取得できなかった場合は枠を解放しない
+
+### 決定
+
+出発時刻は算出せず `DeparturePlan.Outcome.travelTimeUnavailable` に落とす。
+**枠は解放しない。** 専用の再試行機構は設けない。
+「移動時間が取得できなかったことを伝える通知を送る」ことを仕様として記載し、
+実装は通知フェーズで行う。
+
+### 理由
+
+オフライン時に枠を失うより保持するほうが損失が小さい。一時的な失敗は次回起動時に
+自然に再試行されるので、専用の再試行機構は要らない。決定9（座標が取れない予定も
+枠を保持する）と同じ考え方。
+
+### 連鎖への影響
+
+失敗しても予定の場所自体はあるので、次のサポート対象の起点にはその場所を使う。
+仕様 2-3 の「前のサポート対象に場所がない場合」には当たらない。実装済み。
+
+---
+
+## 決定13: 自宅の座標はオンボーディングで必須
+
+### 決定
+
+`UserPreferences.homeLatitude` / `homeLongitude` が未設定の状態は想定しない。
+オンボーディングで必須項目にする。
+
+`DeparturePlan.Outcome.originUnavailable` は防御的な扱いとして残すが、通常フローでは
+発生しない前提。
+
+### 理由
+
+その日の最初のサポート対象は自宅を起点にするため（仕様 2-3）、未設定だと出発時刻を
+算出できない。設定させないまま起動を許すと、その日の1件目が必ず計算できなくなる。
+
+---
+
+## 決定14: 交通機関の所要時間は到着時刻を基準に引く
+
+### 決定
+
+`MKDirections.Request` の `arrivalDate` に**予定の開始時刻**を指定する。
+バッファの10分はそのあと別に引く。
+
+**交通手段で出し分けず、徒歩・車・電車のすべてで指定する。**
+
+### 理由
+
+知りたいのは「その時刻に着くには何分かかるか」。現在時刻を基準にすると、翌朝の予定を
+深夜のダイヤで計算してしまう。翌日ぶんを今日のうちに計算する仕様（決定7）と噛み合わない。
+
+出し分けない理由は、Apple のドキュメントが `arrivalDate` / `departureDate` を
+どちらも次のようにしか説明していないため。
+
+> Specifying an arrival date provides the server with extra information that it can use to
+> optimize the returned routes. For example, for a trip that takes place during commute hours,
+> the server might consider alternatives to routes that are typically congested at that time.
+> The use of this property is optional.
+
+交通機関に限る記述も、徒歩で無視されるという記述も無い。渋滞の例からすると車にも効く。
+徒歩で効くかは書かれていないが、**効かないとも書かれていない**。ここで分岐を入れると
+MapKit の内部挙動を推測することになるので、一律で指定する。指定に伴う不利益は
+ドキュメント上見当たらない。
+
+### 実装
+
+`TravelTimeService` プロトコルに `arrivalDate: Date` を追加した。
+MapKit へ渡すのは CatPlatform 側なので Linux では検証できないが、
+「プロトコルに予定の開始時刻を渡していること」は CatCore 側でテストしてある。
+
+---
+
+## 決定15: 日跨ぎ予定は翌日の連鎖の起点に使う
+
+### 決定
+
+日跨ぎ予定は開始日にのみ出発時刻を計算する（仕様どおり）。そのうえで、翌日側では
+その予定を「前のサポート対象」として次の予定の起点に使う。
+
+### 理由
+
+ユーザーは実際にその場所に居るため、そこから次の予定に向かうのが自然。
+
+`Outcome.notComputedOnThisDay` で「出発時刻を計算しなかった予定」と区別できるので、
+方針を変える場合もそこを見れば済む。
+
+---
+
 ## 未確定の論点
 
 以下は実装で暫定的に決めた既定値。運用データが出てから判断する。

@@ -12,10 +12,11 @@ Sources/
   CatCore/                   ← Apple 非依存。Linux でテストできる
     Models/                    EventKey / CalendarEvent / EventSnapshot / DailySlots / …
     Protocols/                 CalendarSource / GeocodingService / FileStore /
-                               TravelTimeService
+                               TravelTimeService / NotificationScheduling
     Logic/                     CompletionEvaluator / ChangeDetector / SlotConfirmer /
                                ConflictDetector / LocationResolver /
-                               TravelModeSelector / DeparturePlanner
+                               TravelModeSelector / DeparturePlanner /
+                               NotificationScheduler
     Persistence/               Repository / RetentionPolicy
     CalendarLayer.swift        全体の統合（refreshOnLaunch）
   CatPlatform/               ← Apple 依存。全ソースが #if canImport(EventKit) で囲まれている
@@ -23,6 +24,7 @@ Sources/
     AppleGeocodingService.swift
     ApplicationSupportFileStore.swift
     MapKitTravelTimeService.swift
+    UserNotificationScheduler.swift
 Tests/
   CatCoreTests/              CatCore にのみ依存する（CatPlatform には依存させない）
   Mocks/                     MockCalendarSource / MockGeocodingService / InMemoryFileStore
@@ -59,7 +61,7 @@ swift test
 このリポジトリは Swift 6.0.3（Ubuntu 24.04, x86_64）で検証済み。
 
 ```
-Executed 146 tests, with 0 failures
+Executed 192 tests, with 0 failures
 ```
 
 `CatPlatform` は Linux 上では `#if canImport(EventKit)` が偽になるため中身が空になる。
@@ -82,6 +84,8 @@ Executed 146 tests, with 0 failures
 | `TravelModeSelectorTests` | 11 | 1.5km 境界、電車/車の選択、距離の算出 |
 | `DeparturePlannerTests` | 18 | 出発時刻、出発地点の連鎖、取得失敗、逐次実行 |
 | `DeparturePlannerLaunchResultTests` | 7 | LaunchResult を入力にした統合 |
+| `NotificationSchedulerTests` | 36 | Free/Premium のタイミング、変更時、過去の除外 |
+| `NotificationSchedulerRegistrationTests` | 10 | 登録の経路、翌日ぶん、identifier |
 
 ## Mac 上で追加が必要なこと
 
@@ -177,9 +181,12 @@ CatPlatform は Linux 上で一度もコンパイルされていない。Mac に
    - `MKMapItem(placemark:)` は新しい SDK で非推奨（警告が出る）。代替の
      `init(location:address:)` は iOS 26 以降なので、デプロイメントターゲットが
      iOS 17 のうちは移行できない。
+   - `UNCalendarNotificationTrigger` / `UNUserNotificationCenter.add(_:)` の
+     async 版のシグネチャ。
 2. **CatPlatform のテストが無い。** Linux では実行できないため。Mac 側で
    `EKEvent → CalendarEvent` の変換（特に繰り返し判定と `structuredLocation` の
    有無での分岐）と、`AppleGeocodingService` のエラー分類にはテストを足したほうがいい。
-3. **後続フェーズのもの**（天気、通知、UI、週次サマリー）は未実装。
+3. **後続フェーズのもの**（天気、UI、週次サマリー、猫の文言生成）は未実装。
+   通知は種別が判別できるプレースホルダを本文に入れてある。
    `EventSnapshot.supportSentAt` に値を入れるのも通知フェーズの仕事で、
    `Repository.markSupportSent(for:at:)` を呼び口として用意してある。

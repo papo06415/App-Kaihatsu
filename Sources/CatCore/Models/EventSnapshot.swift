@@ -19,6 +19,11 @@ public struct EventSnapshot: Codable, Equatable {
     /// （送信済みの支援は取り消せないので、1日の上限を消費したものとして扱う）。
     /// 実際に値を入れるのは後続フェーズの通知処理。
     public var supportSentAt: Date?
+    /// 前回算出した出発時刻。未算出なら nil。
+    ///
+    /// 「出発時刻が10分以上早まったか」の判定に使う。変更検知のために予定の状態を
+    /// 保持しているのはここなので、同じ予定の情報が2箇所に分かれないよう一緒に持たせる。
+    public var lastDepartureTime: Date?
 
     public init(
         key: EventKey,
@@ -29,7 +34,8 @@ public struct EventSnapshot: Codable, Equatable {
         editCount: Int = 0,
         isCompleted: Bool = false,
         completedAt: Date? = nil,
-        supportSentAt: Date? = nil
+        supportSentAt: Date? = nil,
+        lastDepartureTime: Date? = nil
     ) {
         self.key = key
         self.startDate = startDate
@@ -40,6 +46,7 @@ public struct EventSnapshot: Codable, Equatable {
         self.isCompleted = isCompleted
         self.completedAt = completedAt
         self.supportSentAt = supportSentAt
+        self.lastDepartureTime = lastDepartureTime
     }
 
     /// 予定から新しいスナップショットを作る（editCount は 0）。
@@ -53,7 +60,8 @@ public struct EventSnapshot: Codable, Equatable {
             editCount: 0,
             isCompleted: false,
             completedAt: nil,
-            supportSentAt: nil
+            supportSentAt: nil,
+            lastDepartureTime: nil
         )
     }
 
